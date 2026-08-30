@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { FoPost, type MediaItem } from '@fopost/sdk';
 import { resolveAccounts, resolveWorkspaceId, type ResolvedAccount } from './accounts.js';
 import { describeError } from './errors.js';
-import { parseInputs, type ActionInputs } from './inputs.js';
+import { parseInputs, readFailOnError, type ActionInputs } from './inputs.js';
 import { debug, info, setFailed, warning } from './logging.js';
 import { resolveBaseUrl, resolveMedia } from './media.js';
 import { writeSummary } from './summary.js';
@@ -75,11 +75,11 @@ async function dryRun(
 }
 
 export async function run(): Promise<void> {
-  let failOnError = true;
+  // Read this before anything that can throw: a malformed input must still honour it.
+  const failOnError = readFailOnError();
 
   try {
     const inputs = parseInputs();
-    failOnError = inputs.failOnError;
 
     const client = new FoPost({ apiKey: inputs.apiKey, baseUrl: resolveBaseUrl() });
     const workspaceId = await resolveWorkspaceId(client, inputs.workspaceId);

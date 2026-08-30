@@ -76,6 +76,21 @@ type RawReader = (name: string) => string;
 const defaultReader: RawReader = (name) => core.getInput(name);
 
 /**
+ * Read `fail-on-error` on its own, tolerating anything malformed.
+ *
+ * `parseInputs` throws on the first bad input, which would otherwise strand the caller with
+ * the `true` default and fail a step the user explicitly asked to keep green. This reads the
+ * one input that decides that, before anything else can throw.
+ */
+export function readFailOnError(read: RawReader = defaultReader): boolean {
+  try {
+    return parseBoolean(read('fail-on-error'), true);
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Read, validate, and normalize every action input. The API key is handed to
  * the masker before anything else runs, so nothing downstream can leak it.
  */
