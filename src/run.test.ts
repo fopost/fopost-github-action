@@ -274,6 +274,32 @@ describe('run', () => {
     expect(recorder.outputs.status).toBe('error');
   });
 
+  it('honours fail-on-error false even when the failure is a bad input', async () => {
+    // `fail-on-error` used to be read off the parsed inputs, so a parse failure never got
+    // as far as setting it and the step failed anyway. The self-test workflow caught this.
+    const impl = stubFetch(happyPath);
+    recorder.inputs.status = 'scheduled';
+    recorder.inputs['schedule-at'] = '';
+    recorder.inputs['fail-on-error'] = 'false';
+
+    await run();
+
+    expect(impl).not.toHaveBeenCalled();
+    expect(recorder.failed).toEqual([]);
+    expect(recorder.warnings[0]).toContain('needs a `schedule-at`');
+    expect(recorder.outputs.status).toBe('error');
+  });
+
+  it('falls back to failing when fail-on-error is itself malformed', async () => {
+    stubFetch(happyPath);
+    recorder.inputs.text = '';
+    recorder.inputs['fail-on-error'] = 'not-a-boolean';
+
+    await run();
+
+    expect(recorder.failed).toHaveLength(1);
+  });
+
   it('fails on a bad input before any network call', async () => {
     const impl = stubFetch(happyPath);
     recorder.inputs.text = '';
