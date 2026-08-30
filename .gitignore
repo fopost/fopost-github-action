@@ -1,0 +1,11 @@
+node_modules/
+coverage/
+*.tgz
+*.log
+.DS_Store
+.env
+.env.*
+*.tsbuildinfo
+.vitest/
+
+# dist/ is intentionally NOT ignored — GitHub runs the committed bundle.
