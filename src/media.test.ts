@@ -63,7 +63,10 @@ describe('resolveMedia', () => {
       { id: 'media_1', type: 'image', name: 'card.png', url: 'r2://card.png' },
     ]);
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('https://api.fopost.test/api/v1/media/upload');
+    // This request is ours, not the SDK's, so the exact path is pinned here.
+    // The API serves /v1; /api/v1 is a 404 and was shipped once already.
+    expect(url).toBe('https://api.fopost.test/v1/media/upload');
+    expect(url).not.toContain('/api/v1');
     expect((init.headers as Record<string, string>)['X-API-Key']).toBe(CTX.apiKey);
     expect(init.body).toBeInstanceOf(FormData);
     expect((init.body as FormData).get('workspaceId')).toBe(CTX.workspaceId);

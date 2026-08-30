@@ -92,12 +92,27 @@ function stubFetch(handler: (req: RecordedRequest) => Response) {
   return impl;
 }
 
+/**
+ * The path a request addressed, without the query string. Requests the SDK
+ * makes are matched by the resource suffix below rather than the full path:
+ * the SDK owns its base path, and a test that pins it is asserting someone
+ * else's implementation detail. Only this action's own requests — the media
+ * upload — get an exact-URL assertion.
+ */
+function pathOf(url: string): string {
+  return new URL(url).pathname;
+}
+
+function isResource(req: RecordedRequest, suffix: string, method = 'GET'): boolean {
+  return req.method === method && pathOf(req.url).endsWith(suffix);
+}
+
 function happyPath(req: RecordedRequest): Response {
-  if (req.url.includes('/api/v1/accounts')) return jsonResponse({ data: [ACCOUNT] });
-  if (req.url.endsWith('/api/v1/posts') && req.method === 'POST') {
+  if (isResource(req, '/accounts')) return jsonResponse({ data: [ACCOUNT] });
+  if (isResource(req, '/posts', 'POST')) {
     return jsonResponse({ data: POST }, 201);
   }
-  if (req.url.endsWith(`/posts/${POST_ID}/publish`)) {
+  if (isResource(req, `/posts/${POST_ID}/publish`, 'POST')) {
     return jsonResponse(
       {
         data: {
@@ -154,7 +169,7 @@ describe('run', () => {
     expect(recorder.outputs.status).toBe('publishing');
     expect(recorder.outputs['delivery-count']).toBe('1');
 
-    const created = requests.find((r) => r.url.endsWith('/api/v1/posts') && r.method === 'POST');
+    const created = requests.find((r) => isResource(r, '/posts', 'POST'));
     expect(created?.body).toMatchObject({
       workspace_id: WORKSPACE_ID,
       status: 'draft',
@@ -165,7 +180,7 @@ describe('run', () => {
   it('resolves a multi-line accounts list by username and platform:username', async () => {
     const second = { ...ACCOUNT, id: '44444444-4444-4444-8444-444444444444', username: 'second' };
     stubFetch((req) => {
-      if (req.url.includes('/api/v1/accounts')) return jsonResponse({ data: [ACCOUNT, second] });
+      if (isResource(req, '/accounts')) return jsonResponse({ data: [ACCOUNT, second] });
       return happyPath(req);
     });
     recorder.inputs.accounts = '  yourbrand \n bluesky:second \n';
@@ -173,7 +188,7 @@ describe('run', () => {
     await run();
 
     expect(recorder.failed).toEqual([]);
-    const created = requests.find((r) => r.url.endsWith('/api/v1/posts') && r.method === 'POST');
+    const created = requests.find((r) => isResource(r, '/posts', 'POST'));
     expect((created?.body as { accounts: string[] }).accounts).toEqual([ACCOUNT_ID, second.id]);
   });
 
@@ -183,12 +198,12 @@ describe('run', () => {
 
     await run();
 
-    const created = requests.find((r) => r.url.endsWith('/api/v1/posts') && r.method === 'POST');
+    const created = requests.find((r) => isResource(r, '/posts', 'POST'));
     expect(created?.body).toMatchObject({
       status: 'scheduled',
       schedule_at: '2026-09-01T10:00:00.000Z',
     });
-    expect(requests.some((r) => r.url.includes('/publish'))).toBe(false);
+    expect(requests.some((r) => pathOf(r.url).endsWith('/publish'))).toBe(false);
   });
 
   it('makes no mutating call on a dry run', async () => {
@@ -201,7 +216,7 @@ describe('run', () => {
 
     expect(recorder.failed).toEqual([]);
     expect(requests.every((r) => r.method === 'GET')).toBe(true);
-    expect(requests.some((r) => r.url.includes('/media/upload'))).toBe(false);
+    expect(requests.some((r) => pathOf(r.url).endsWith('/media/upload'))).toBe(false);
     expect(recorder.outputs.status).toBe('dry-run');
     expect(recorder.outputs['post-id']).toBe('');
     expect(recorder.outputs['delivery-count']).toBe('0');
@@ -209,7 +224,7 @@ describe('run', () => {
 
   it('fails with a clear message that never contains the API key', async () => {
     stubFetch((req) => {
-      if (req.url.includes('/api/v1/accounts')) return jsonResponse({ data: [ACCOUNT] });
+      if (isResource(req, '/accounts')) return jsonResponse({ data: [ACCOUNT] });
       return jsonResponse({ error: 'unauthorized', message: `invalid key ${API_KEY}` }, 401, {
         'x-request-id': 'req_should_not_be_logged',
       });
@@ -228,7 +243,7 @@ describe('run', () => {
 
   it('prints the upgrade URL on a 402', async () => {
     stubFetch((req) => {
-      if (req.url.includes('/api/v1/accounts')) return jsonResponse({ data: [ACCOUNT] });
+      if (isResource(req, '/accounts')) return jsonResponse({ data: [ACCOUNT] });
       return jsonResponse(
         {
           error: 'subscription_required',
@@ -246,7 +261,7 @@ describe('run', () => {
 
   it('warns instead of failing when fail-on-error is false', async () => {
     stubFetch((req) => {
-      if (req.url.includes('/api/v1/accounts')) return jsonResponse({ data: [ACCOUNT] });
+      if (isResource(req, '/accounts')) return jsonResponse({ data: [ACCOUNT] });
       return jsonResponse({ error: 'server_error', message: 'boom' }, 500);
     });
     recorder.inputs['fail-on-error'] = 'false';
