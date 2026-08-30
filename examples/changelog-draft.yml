@@ -1,0 +1,33 @@
+# Turn the top of CHANGELOG.md into a draft post on every tag, without
+# publishing. A person reviews and sends it from the FoPost dashboard.
+
+name: Draft from CHANGELOG
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract the newest CHANGELOG section
+        run: |
+          awk '/^## /{ if (seen++) exit } seen' CHANGELOG.md > release-notes.md
+          head -c 400 release-notes.md
+
+      - name: Create the draft
+        uses: fopost/fopost-github-action@v0
+        with:
+          api-key: ${{ secrets.FOPOST_API_KEY }}
+          workspace-id: ${{ vars.FOPOST_WORKSPACE_ID }}
+          accounts: bluesky:yourbrand, linkedin:yourbrand
+          text-file: release-notes.md
+          status: draft
+          labels: release, needs-review

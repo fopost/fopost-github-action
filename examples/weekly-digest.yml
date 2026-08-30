@@ -1,0 +1,48 @@
+# Schedule a post every Monday from a file the repository already maintains.
+#
+# The digest body comes from a file in the checkout, so writing the post is a
+# pull request rather than a workflow edit. The post is scheduled rather than
+# published, which leaves a person a window to edit it in the dashboard.
+
+name: Weekly digest
+
+on:
+  schedule:
+    # Mondays at 08:00 UTC. Cron on GitHub is always UTC.
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Validate without scheduling anything
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick the publish time
+        id: when
+        run: echo "at=$(date -u -d 'today 15:00' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Schedule the digest
+        uses: fopost/fopost-github-action@v0
+        with:
+          api-key: ${{ secrets.FOPOST_API_KEY }}
+          workspace-id: ${{ vars.FOPOST_WORKSPACE_ID }}
+          accounts: |
+            bluesky:yourbrand
+            linkedin:yourbrand
+          text-file: content/weekly-digest.md
+          media: |
+            assets/digest-card.png
+          schedule-at: ${{ steps.when.outputs.at }}
+          labels: digest, weekly
+          # A missed digest should not turn the repository's checks red.
+          fail-on-error: false
+          dry-run: ${{ inputs.dry-run || false }}
