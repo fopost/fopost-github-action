@@ -75,7 +75,7 @@ export async function uploadMediaFile(path: string, ctx: UploadContext): Promise
   form.append('files', new Blob([new Uint8Array(bytes)], { type: MIME_TYPES[ext] }), name);
 
   const doFetch = ctx.fetchImpl ?? globalThis.fetch;
-  const url = `${ctx.baseUrl ?? resolveBaseUrl()}/api/v1/media/upload`;
+  const url = `${ctx.baseUrl ?? resolveBaseUrl()}/v1/media/upload`;
   debug(`Uploading ${name} (${bytes.byteLength} bytes) to the media library`);
 
   const res = await doFetch(url, {
