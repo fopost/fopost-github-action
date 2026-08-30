@@ -9,8 +9,8 @@ branding:
 inputs:
   api-key:
     description: >-
-      FoPost API key. Always pass this from a secret, never a literal —
-      `${{ secrets.FOPOST_API_KEY }}`. The value is masked in the log.
+      FoPost API key. Always pass this from a repository secret, never a
+      literal. The value is masked in the log.
     required: true
 
   workspace-id:
