@@ -90,9 +90,10 @@ export async function uploadMediaFile(path: string, ctx: UploadContext): Promise
     // Only the retry delay is lifted off the response; no other header is read
     // or logged, so nothing incidental reaches the build log.
     const retryAfter = Number(res.headers.get('retry-after'));
-    const body = Number.isFinite(retryAfter) && retryAfter > 0
-      ? { ...payload, retry_after: retryAfter }
-      : payload;
+    const body =
+      Number.isFinite(retryAfter) && retryAfter > 0
+        ? { ...payload, retry_after: retryAfter }
+        : payload;
     const message =
       (typeof payload.message === 'string' && payload.message) ||
       (typeof payload.error === 'string' && payload.error) ||
@@ -103,7 +104,12 @@ export async function uploadMediaFile(path: string, ctx: UploadContext): Promise
   const items = Array.isArray(payload.data) ? (payload.data as Record<string, unknown>[]) : [];
   const uploaded = items[0];
   if (!uploaded || typeof uploaded.url !== 'string') {
-    throw new FoPostError(`Uploading ${name} returned no media URL`, res.status, undefined, payload);
+    throw new FoPostError(
+      `Uploading ${name} returned no media URL`,
+      res.status,
+      undefined,
+      payload,
+    );
   }
 
   info(`Uploaded ${name}`);
