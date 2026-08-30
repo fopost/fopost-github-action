@@ -1,0 +1,3 @@
+# The ncc bundle is build output that has to be committed for GitHub to run it.
+# Keep it out of diffs and out of the language stats.
+dist/** -diff linguist-generated=true

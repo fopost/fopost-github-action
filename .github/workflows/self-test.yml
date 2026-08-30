@@ -1,0 +1,86 @@
+name: Self test
+
+# Runs the committed bundle against itself in dry-run mode, so every change is
+# exercised end to end: inputs parse, the account list resolves, outputs are
+# set, and the job summary renders. No live key and no mutating call.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Post release notes (dry run)
+        id: fopost
+        uses: ./
+        with:
+          # A placeholder key is enough: a dry run never reaches a mutating
+          # endpoint, and the read it attempts degrades to the ids as given.
+          api-key: ${{ secrets.FOPOST_API_KEY || 'placeholder-key-for-dry-run' }}
+          workspace-id: 00000000-0000-4000-8000-000000000000
+          accounts: |
+            00000000-0000-4000-8000-000000000001
+            00000000-0000-4000-8000-000000000002
+          text: |
+            ${{ github.repository }} built ${{ github.sha }}.
+            This is the FoPost action exercising itself.
+          labels: ci, self-test
+          publish: true
+          dry-run: true
+
+      - name: Assert the dry run set its outputs
+        run: |
+          test "${{ steps.fopost.outputs.status }}" = "dry-run"
+          test -z "${{ steps.fopost.outputs.post-id }}"
+          test "${{ steps.fopost.outputs.delivery-count }}" = "0"
+
+      - name: Post from a file (dry run)
+        id: from-file
+        uses: ./
+        with:
+          api-key: ${{ secrets.FOPOST_API_KEY || 'placeholder-key-for-dry-run' }}
+          workspace-id: 00000000-0000-4000-8000-000000000000
+          accounts: 00000000-0000-4000-8000-000000000001
+          text-file: README.md
+          schedule-at: '2099-01-01T09:00:00Z'
+          dry-run: true
+
+      - name: Assert the file was read
+        run: test "${{ steps.from-file.outputs.status }}" = "dry-run"
+
+      - name: A bad input fails the step
+        id: bad
+        continue-on-error: true
+        uses: ./
+        with:
+          api-key: placeholder-key-for-dry-run
+          accounts: 00000000-0000-4000-8000-000000000001
+          status: scheduled
+          text: missing a schedule-at
+          dry-run: true
+
+      - name: Assert it failed
+        run: test "${{ steps.bad.outcome }}" = "failure"
+
+      - name: fail-on-error false keeps the job green
+        id: soft
+        uses: ./
+        with:
+          api-key: placeholder-key-for-dry-run
+          accounts: 00000000-0000-4000-8000-000000000001
+          text: missing a schedule-at
+          status: scheduled
+          fail-on-error: false
+          dry-run: true
+
+      - name: Assert it warned instead
+        run: test "${{ steps.soft.outputs.status }}" = "error"

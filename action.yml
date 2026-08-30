@@ -1,0 +1,93 @@
+name: FoPost
+description: Create, schedule, and publish social posts to every network connected to your FoPost workspace.
+author: Porter Bridge, LLC
+
+branding:
+  icon: send
+  color: purple
+
+inputs:
+  api-key:
+    description: >-
+      FoPost API key. Always pass this from a repository secret, never a
+      literal. The value is masked in the log.
+    required: true
+
+  workspace-id:
+    description: >-
+      Workspace the post belongs to. Optional when the key can reach exactly
+      one workspace, in which case that one is used.
+    required: false
+
+  accounts:
+    description: >-
+      Accounts to post to, one per line or comma separated. Each entry is an
+      account id, a username, or `platform:username` (e.g. `bluesky:yourbrand`).
+    required: false
+
+  text:
+    description: Post body. Mutually exclusive with `text-file`.
+    required: false
+
+  text-file:
+    description: >-
+      Path to a file in the workspace whose contents become the post body —
+      release notes, a CHANGELOG excerpt, a generated summary.
+    required: false
+
+  media:
+    description: >-
+      Images or videos to attach, one per line or comma separated. A local path
+      is uploaded to the media library first; an `http(s)` URL is attached as is.
+    required: false
+
+  schedule-at:
+    description: >-
+      When to publish, as an ISO 8601 timestamp (e.g. `2026-09-01T10:00:00Z`).
+      Implies `status: scheduled` unless `status` says otherwise.
+    required: false
+
+  status:
+    description: '`draft` or `scheduled`. Defaults to `scheduled` when `schedule-at` is set, otherwise `draft`.'
+    required: false
+
+  publish:
+    description: >-
+      Publish the post immediately after creating it. Delivery is queued, so a
+      successful run means accepted, not yet live.
+    required: false
+    default: 'false'
+
+  labels:
+    description: Labels to attach, one per line or comma separated.
+    required: false
+
+  fail-on-error:
+    description: >-
+      Fail the step when the post cannot be created or published. Set to `false`
+      to log a warning and carry on.
+    required: false
+    default: 'true'
+
+  dry-run:
+    description: >-
+      Validate the inputs and print what would be posted without creating,
+      uploading, or publishing anything.
+    required: false
+    default: 'false'
+
+outputs:
+  post-id:
+    description: Id of the created post. Empty on a dry run.
+  post-url:
+    description: Dashboard URL of the created post. Empty on a dry run.
+  status:
+    description: >-
+      Post status after the run — `draft`, `scheduled`, `publishing`,
+      `pending_approval`, `dry-run`, or `error` when `fail-on-error` is false.
+  delivery-count:
+    description: Number of per-account deliveries queued by `publish`. `0` when not publishing.
+
+runs:
+  using: node20
+  main: dist/index.js

@@ -1,0 +1,37 @@
+# Announce every published GitHub Release on your social accounts.
+#
+# Copy to .github/workflows/announce-release.yml and set the FOPOST_API_KEY
+# repository secret (Settings → Secrets and variables → Actions).
+
+name: Announce release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post the release
+        id: fopost
+        uses: fopost/fopost-github-action@v0
+        with:
+          api-key: ${{ secrets.FOPOST_API_KEY }}
+          workspace-id: ${{ vars.FOPOST_WORKSPACE_ID }}
+          accounts: |
+            bluesky:yourbrand
+            linkedin:yourbrand
+            mastodon:yourbrand
+          text: |
+            ${{ github.event.repository.name }} ${{ github.event.release.tag_name }} is out.
+
+            ${{ github.event.release.html_url }}
+          labels: release
+          publish: true
+
+      - name: Link the post in the job log
+        run: echo "Posted ${{ steps.fopost.outputs.post-id }} → ${{ steps.fopost.outputs.post-url }}"
