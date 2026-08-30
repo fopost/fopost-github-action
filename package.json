@@ -1,0 +1,54 @@
+{
+  "name": "fopost-github-action",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Official GitHub Action for FoPost. Create, schedule, and publish social posts from a workflow.",
+  "license": "MIT",
+  "author": "Porter Bridge, LLC",
+  "type": "module",
+  "homepage": "https://fopost.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fopost/fopost-github-action.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fopost/fopost-github-action/issues"
+  },
+  "keywords": [
+    "fopost",
+    "social-media",
+    "scheduling",
+    "publishing",
+    "github-action",
+    "actions"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "ncc build src/index.ts -o dist --license licenses.txt",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "all": "npm run lint && npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@fopost/sdk": "^0.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@vercel/ncc": "^0.38.3",
+    "eslint": "^9.17.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.19.0",
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "undici": "^6.28.0"
+  }
+}
