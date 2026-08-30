@@ -77,16 +77,20 @@ the source edit.
 
 Inherited from `@fopost/sdk` (read that repo before changing request shapes):
 
-- Base URL `https://api.fopost.com`, paths under `/api/v1/`. Override with the
+- Base URL `https://api.fopost.com`, paths under **`/v1/`**. Override with the
   `FOPOST_BASE_URL` env var (used by the tests and the local smoke run).
+  **`/api/v1/` is a 404** — confirmed by probe (`/v1/platforms` 200,
+  `/api/v1/platforms` 404). This action shipped that wrong prefix once; do not
+  reintroduce it.
 - Auth header `X-API-Key: <key>` — not Bearer.
 - Success envelope `{"data": ...}`; the SDK unwraps it.
 - Error envelope `{"error": "<code>", "message": "<text>"}`; 402 carries `upgrade_url`.
 - `posts.create` then `posts.publish` — publish returns when delivery is **queued**,
   not live. Its body is `{ post_status, deliveries[], healthWarnings }`.
-- Media upload is `POST /api/v1/media/upload`, multipart, files under the `files`
+- Media upload is `POST /v1/media/upload`, multipart, files under the `files`
   field plus a `workspaceId` field. The SDK does not wrap it, so `src/media.ts` posts
-  directly with the same auth header.
+  directly with the same auth header — which makes the path ours to get right, and the
+  one URL `src/media.test.ts` asserts exactly.
 - The dashboard URL for a post is `https://app.fopost.com/posts/<id>`, overridable with
   `FOPOST_APP_URL`.
 
@@ -95,10 +99,26 @@ Inherited from `@fopost/sdk` (read that repo before changing request shapes):
 `@fopost/sdk` is published on npm, so `npm ci` resolves it normally — no
 CI-from-source shim is needed here.
 
-**Version note:** the manifest declares `^0.2.2`. The brief for this repo said `^0.1`,
-but npm only ever carried `0.2.1` and `0.2.2`, so `^0.1` would not install. If a `0.1.x`
-line is ever published and becomes the intended target, change the constraint and
-re-check `posts.create` / `posts.publish` signatures against that version.
+**The range must move to `^0.2.3` as soon as that version is on npm.** The manifest
+currently declares `^0.2.2`, and 0.2.2 is broken: it sends _every_ request to
+`/api/v1/...`, which the API answers with a 404. So while this action's own media
+upload is now correct, the SDK-driven calls (`accounts.list`, `posts.create`,
+`posts.publish`) cannot succeed against production until 0.2.3 lands. The fix is on
+branch `fix/api-base-path` in `fopost-js`.
+
+`^0.2.3` is not declared yet on purpose: npm has no such version, so declaring it fails
+`npm ci` outright with `ETARGET` — which would take CI, the self test, and the release
+workflow red, and would not make the action work any sooner. Bump `package.json`, run
+`npm install` to refresh the lockfile, and drop this paragraph the day 0.2.3 publishes.
+
+Historical note: the brief for this repo said `^0.1`, but npm only ever carried the
+0.2.x line, so `^0.1` would not install either.
+
+**Never assert the SDK's base path in a test.** `src/run.test.ts` matches the SDK's
+requests by resource suffix (`/posts`, `/accounts`, `/posts/<id>/publish`) via `pathOf`
+and `isResource`, so the suite passes against 0.2.2 and 0.2.3 alike and needs no edit
+when the bump lands. Pinning a full SDK URL is asserting someone else's implementation
+detail, and is why the `/api/v1` bug survived review the first time.
 
 `overrides.undici` in `package.json` exists only to lift the transitive `undici` that
 `@actions/core` → `@actions/http-client` pulls in past its advisories. Drop it once
