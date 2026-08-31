@@ -7,7 +7,7 @@ import { debug, info, setFailed, warning } from './logging.js';
 import { resolveBaseUrl, resolveMedia } from './media.js';
 import { writeSummary } from './summary.js';
 
-const DEFAULT_DASHBOARD_URL = 'https://app.fopost.com';
+const DEFAULT_DASHBOARD_URL = 'https://fopost.com/dashboard';
 
 function postUrl(postId: string): string {
   const base = (process.env.FOPOST_APP_URL || DEFAULT_DASHBOARD_URL).replace(/\/$/, '');

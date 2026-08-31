@@ -32186,7 +32186,7 @@ async function writeSummary(input) {
 
 
 
-const DEFAULT_DASHBOARD_URL = 'https://app.fopost.com';
+const DEFAULT_DASHBOARD_URL = 'https://fopost.com/dashboard';
 function postUrl(postId) {
     const base = (process.env.FOPOST_APP_URL || DEFAULT_DASHBOARD_URL).replace(/\/$/, '');
     return `${base}/posts/${postId}`;

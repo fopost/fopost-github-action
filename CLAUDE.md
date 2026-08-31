@@ -91,7 +91,7 @@ Inherited from `@fopost/sdk` (read that repo before changing request shapes):
   field plus a `workspaceId` field. The SDK does not wrap it, so `src/media.ts` posts
   directly with the same auth header — which makes the path ours to get right, and the
   one URL `src/media.test.ts` asserts exactly.
-- The dashboard URL for a post is `https://app.fopost.com/posts/<id>`, overridable with
+- The dashboard URL for a post is `https://fopost.com/dashboard/posts/<id>`, overridable with
   `FOPOST_APP_URL`.
 
 ## Parent dependency

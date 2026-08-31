@@ -165,7 +165,7 @@ describe('run', () => {
 
     expect(recorder.failed).toEqual([]);
     expect(recorder.outputs['post-id']).toBe(POST_ID);
-    expect(recorder.outputs['post-url']).toBe(`https://app.fopost.com/posts/${POST_ID}`);
+    expect(recorder.outputs['post-url']).toBe(`https://fopost.com/dashboard/posts/${POST_ID}`);
     expect(recorder.outputs.status).toBe('publishing');
     expect(recorder.outputs['delivery-count']).toBe('1');
 
@@ -248,7 +248,7 @@ describe('run', () => {
         {
           error: 'subscription_required',
           message: 'Your plan does not include publishing.',
-          upgrade_url: 'https://app.fopost.com/settings/billing',
+          upgrade_url: 'https://fopost.com/dashboard/settings/billing',
         },
         402,
       );
@@ -256,7 +256,7 @@ describe('run', () => {
 
     await run();
 
-    expect(recorder.failed[0]).toContain('https://app.fopost.com/settings/billing');
+    expect(recorder.failed[0]).toContain('https://fopost.com/dashboard/settings/billing');
   });
 
   it('warns instead of failing when fail-on-error is false', async () => {
