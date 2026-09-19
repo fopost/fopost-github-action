@@ -102,9 +102,6 @@ CI-from-source shim is needed here.
 The manifest declares `^0.3.0`. Releases before 0.2.3 sent every request to `/api/v1/...`,
 which the API answers with a 404, so never lower the floor below that.
 
-Historical note: the brief for this repo said `^0.1`, but npm only ever carried the
-0.2.x line, so `^0.1` would not install either.
-
 **Never assert the SDK's base path in a test.** `src/run.test.ts` matches the SDK's
 requests by resource suffix (`/posts`, `/accounts`, `/posts/<id>/publish`) via `pathOf`
 and `isResource`, so the suite does not depend on the SDK's URL layout. Pinning a full SDK URL is asserting someone else's implementation
