@@ -54,9 +54,37 @@ export type UploadContext = {
 
 type UploadedMedia = MediaItem & { id?: string };
 
+type PresignedUpload = {
+  uploadId: string;
+  uploadUrl: string;
+  method: string;
+  headers: Record<string, string>;
+};
+
+/** Reads the body as JSON; a non-JSON body counts as empty. */
+async function readJson(res: Response): Promise<Record<string, unknown>> {
+  return (await res.json().catch(() => ({}))) as Record<string, unknown>;
+}
+
+function apiError(res: Response, payload: Record<string, unknown>, fallback: string): FoPostError {
+  // Only the retry delay is lifted off the response; no other header is read
+  // or logged, so nothing incidental reaches the build log.
+  const retryAfter = Number(res.headers.get('retry-after'));
+  const body =
+    Number.isFinite(retryAfter) && retryAfter > 0
+      ? { ...payload, retry_after: retryAfter }
+      : payload;
+  const message =
+    (typeof payload.message === 'string' && payload.message) ||
+    (typeof payload.error === 'string' && payload.error) ||
+    fallback;
+  return new FoPostError(message, res.status, payload.error as string | undefined, body);
+}
+
 /**
- * Upload one local file to the media library. The SDK does not wrap the
- * multipart endpoint, so this posts directly with the same auth header.
+ * Upload one local file to the media library through the direct-upload flow:
+ * presign, PUT the bytes to the returned URL, then complete. The SDK does not
+ * wrap these endpoints, so this calls them directly with the same auth header.
  */
 export async function uploadMediaFile(path: string, ctx: UploadContext): Promise<UploadedMedia> {
   const absolute = resolveWorkspacePath(path);
@@ -70,43 +98,80 @@ export async function uploadMediaFile(path: string, ctx: UploadContext): Promise
 
   const name = basename(absolute);
   const ext = extname(name).toLowerCase();
-  const form = new FormData();
-  form.append('workspaceId', ctx.workspaceId);
-  form.append('files', new Blob([new Uint8Array(bytes)], { type: MIME_TYPES[ext] }), name);
+  const mimeType = MIME_TYPES[ext] ?? 'application/octet-stream';
 
   const doFetch = ctx.fetchImpl ?? globalThis.fetch;
-  const url = `${ctx.baseUrl ?? resolveBaseUrl()}/v1/media/upload`;
+  const base = `${ctx.baseUrl ?? resolveBaseUrl()}/v1/media/presign`;
+  const authHeaders = {
+    'X-API-Key': ctx.apiKey,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  };
   debug(`Uploading ${name} (${bytes.byteLength} bytes) to the media library`);
 
-  const res = await doFetch(url, {
+  const presignRes = await doFetch(base, {
     method: 'POST',
-    headers: { 'X-API-Key': ctx.apiKey, Accept: 'application/json' },
-    body: form,
+    headers: authHeaders,
+    body: JSON.stringify({
+      workspaceId: ctx.workspaceId,
+      filename: name,
+      mimeType,
+      size: bytes.byteLength,
+    }),
   });
-
-  const payload = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-
-  if (!res.ok) {
-    // Only the retry delay is lifted off the response; no other header is read
-    // or logged, so nothing incidental reaches the build log.
-    const retryAfter = Number(res.headers.get('retry-after'));
-    const body =
-      Number.isFinite(retryAfter) && retryAfter > 0
-        ? { ...payload, retry_after: retryAfter }
-        : payload;
-    const message =
-      (typeof payload.message === 'string' && payload.message) ||
-      (typeof payload.error === 'string' && payload.error) ||
-      `Uploading ${name} failed with HTTP ${res.status}`;
-    throw new FoPostError(message, res.status, payload.error as string | undefined, body);
+  const presignPayload = await readJson(presignRes);
+  if (!presignRes.ok) {
+    throw apiError(
+      presignRes,
+      presignPayload,
+      `Uploading ${name} failed with HTTP ${presignRes.status}`,
+    );
+  }
+  const presigned = presignPayload.data as Partial<PresignedUpload> | undefined;
+  if (
+    !presigned ||
+    typeof presigned.uploadId !== 'string' ||
+    typeof presigned.uploadUrl !== 'string'
+  ) {
+    throw new FoPostError(
+      `Uploading ${name} returned no upload URL`,
+      presignRes.status,
+      undefined,
+      presignPayload,
+    );
   }
 
-  const items = Array.isArray(payload.data) ? (payload.data as Record<string, unknown>[]) : [];
-  const uploaded = items[0];
+  // The upload URL is pre-authorised: it carries exactly the presigned headers and no API key.
+  const putRes = await doFetch(presigned.uploadUrl, {
+    method: presigned.method ?? 'PUT',
+    headers: presigned.headers ?? { 'Content-Type': mimeType },
+    body: new Uint8Array(bytes),
+  });
+  if (!putRes.ok) {
+    throw new FoPostError(
+      `Uploading ${name} failed with HTTP ${putRes.status} from storage`,
+      putRes.status,
+    );
+  }
+
+  const completeRes = await doFetch(`${base}/${encodeURIComponent(presigned.uploadId)}/complete`, {
+    method: 'POST',
+    headers: authHeaders,
+  });
+  const payload = await readJson(completeRes);
+  if (!completeRes.ok) {
+    throw apiError(
+      completeRes,
+      payload,
+      `Uploading ${name} failed with HTTP ${completeRes.status}`,
+    );
+  }
+
+  const uploaded = payload.data as Record<string, unknown> | undefined;
   if (!uploaded || typeof uploaded.url !== 'string') {
     throw new FoPostError(
       `Uploading ${name} returned no media URL`,
-      res.status,
+      completeRes.status,
       undefined,
       payload,
     );

@@ -48,28 +48,65 @@ describe('remoteMediaItem', () => {
 });
 
 describe('resolveMedia', () => {
-  it('uploads a local file with the API key header and attaches what came back', async () => {
+  it('presigns, PUTs the bytes without the API key, then completes', async () => {
     const path = tempFile('card.png');
-    const fetchImpl = vi.fn(async () =>
-      jsonResponse(
-        { data: [{ id: 'media_1', type: 'image', name: 'card.png', url: 'r2://card.png' }] },
-        201,
-      ),
-    );
+    const uploadUrl = 'https://bucket.example.test/staging/card.png?sig=abc';
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      if (url.endsWith('/v1/media/presign')) {
+        return jsonResponse(
+          {
+            data: {
+              uploadId: 'up_1',
+              uploadUrl,
+              method: 'PUT',
+              headers: { 'Content-Type': 'image/png' },
+              expiresAt: '2026-09-19T00:15:00.000Z',
+            },
+          },
+          201,
+        );
+      }
+      if (url === uploadUrl && init.method === 'PUT') return new Response(null, { status: 200 });
+      if (url.endsWith('/v1/media/presign/up_1/complete')) {
+        return jsonResponse(
+          { data: { id: 'media_1', type: 'image', name: 'card.png', url: 'r2://card.png' } },
+          201,
+        );
+      }
+      return jsonResponse({ error: 'not_found', message: `unstubbed ${url}` }, 404);
+    });
 
     const items = await resolveMedia([path], { ...CTX, fetchImpl: fetchImpl as never });
 
     expect(items).toEqual([
       { id: 'media_1', type: 'image', name: 'card.png', url: 'r2://card.png' },
     ]);
-    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    // This request is ours, not the SDK's, so the exact path is pinned here.
+    const calls = fetchImpl.mock.calls as unknown as [string, RequestInit][];
+    expect(calls.map(([url, init]) => `${init.method} ${url}`)).toEqual([
+      'POST https://api.fopost.test/v1/media/presign',
+      `PUT ${uploadUrl}`,
+      'POST https://api.fopost.test/v1/media/presign/up_1/complete',
+    ]);
+    // These requests are ours, not the SDK's, so the exact paths are pinned here.
     // The API serves /v1; /api/v1 is a 404 and was shipped once already.
-    expect(url).toBe('https://api.fopost.test/v1/media/upload');
-    expect(url).not.toContain('/api/v1');
-    expect((init.headers as Record<string, string>)['X-API-Key']).toBe(CTX.apiKey);
-    expect(init.body).toBeInstanceOf(FormData);
-    expect((init.body as FormData).get('workspaceId')).toBe(CTX.workspaceId);
+    expect(calls.some(([url]) => url.includes('/api/v1'))).toBe(false);
+
+    const [, presign] = calls[0];
+    expect((presign.headers as Record<string, string>)['X-API-Key']).toBe(CTX.apiKey);
+    expect(JSON.parse(presign.body as string)).toEqual({
+      workspaceId: CTX.workspaceId,
+      filename: 'card.png',
+      mimeType: 'image/png',
+      size: 'binary-ish'.length,
+    });
+
+    const [, put] = calls[1];
+    expect(put.headers).toEqual({ 'Content-Type': 'image/png' });
+    expect(put.headers).not.toHaveProperty('X-API-Key');
+    expect(put.body).toBeInstanceOf(Uint8Array);
+
+    const [, complete] = calls[2];
+    expect((complete.headers as Record<string, string>)['X-API-Key']).toBe(CTX.apiKey);
   });
 
   it('passes a remote URL through without uploading', async () => {
@@ -83,7 +120,7 @@ describe('resolveMedia', () => {
     expect(items[0].type).toBe('video');
   });
 
-  it('surfaces a rate limit with the retry delay from the header', async () => {
+  it('surfaces a rate limit on presign with the retry delay from the header', async () => {
     const path = tempFile('card.png');
     const fetchImpl = vi.fn(async () =>
       jsonResponse({ error: 'rate_limited', message: 'Too many uploads' }, 429, {
