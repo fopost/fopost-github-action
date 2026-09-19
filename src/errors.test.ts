@@ -56,7 +56,9 @@ describe('describeError', () => {
     const error = new FoPostError('Plan does not cover this', 402, 'subscription_required', {
       upgrade_url: 'https://fopost.com/dashboard/settings/billing',
     });
-    expect(describeError(error)).toContain('Upgrade: https://fopost.com/dashboard/settings/billing');
+    expect(describeError(error)).toContain(
+      'Upgrade: https://fopost.com/dashboard/settings/billing',
+    );
   });
 
   it('says when to retry on a 429', () => {

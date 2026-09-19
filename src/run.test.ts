@@ -97,7 +97,7 @@ function stubFetch(handler: (req: RecordedRequest) => Response) {
  * makes are matched by the resource suffix below rather than the full path:
  * the SDK owns its base path, and a test that pins it is asserting someone
  * else's implementation detail. Only this action's own requests — the media
- * upload — get an exact-URL assertion.
+ * presign and complete calls — get an exact-URL assertion.
  */
 function pathOf(url: string): string {
   return new URL(url).pathname;
@@ -216,7 +216,7 @@ describe('run', () => {
 
     expect(recorder.failed).toEqual([]);
     expect(requests.every((r) => r.method === 'GET')).toBe(true);
-    expect(requests.some((r) => pathOf(r.url).endsWith('/media/upload'))).toBe(false);
+    expect(requests.some((r) => pathOf(r.url).includes('/media/presign'))).toBe(false);
     expect(recorder.outputs.status).toBe('dry-run');
     expect(recorder.outputs['post-id']).toBe('');
     expect(recorder.outputs['delivery-count']).toBe('0');

@@ -87,10 +87,13 @@ Inherited from `@fopost/sdk` (read that repo before changing request shapes):
 - Error envelope `{"error": "<code>", "message": "<text>"}`; 402 carries `upgrade_url`.
 - `posts.create` then `posts.publish` — publish returns when delivery is **queued**,
   not live. Its body is `{ post_status, deliveries[], healthWarnings }`.
-- Media upload is `POST /v1/media/upload`, multipart, files under the `files`
-  field plus a `workspaceId` field. The SDK does not wrap it, so `src/media.ts` posts
-  directly with the same auth header — which makes the path ours to get right, and the
-  one URL `src/media.test.ts` asserts exactly.
+- Media upload is the direct-upload flow: `POST /v1/media/presign`
+  `{ workspaceId, filename, mimeType, size }` → `{ uploadId, uploadUrl, method, headers }`,
+  a `PUT` of the raw bytes to `uploadUrl` with exactly those headers and **no API key**,
+  then `POST /v1/media/presign/<uploadId>/complete`, which answers the same media shape
+  as the old `/v1/media/upload`. The SDK does not wrap it, so `src/media.ts` calls it
+  directly with the same auth header — which makes the paths ours to get right, and the
+  URLs `src/media.test.ts` asserts exactly.
 - The dashboard URL for a post is `https://fopost.com/dashboard/posts/<id>`, overridable with
   `FOPOST_APP_URL`.
 
