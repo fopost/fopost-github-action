@@ -37,7 +37,7 @@
   },
   "dependencies": {
     "@actions/core": "^1.11.1",
-    "@fopost/sdk": "^0.2.2"
+    "@fopost/sdk": "^0.3.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",

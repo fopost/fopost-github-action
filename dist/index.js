@@ -31541,6 +31541,8 @@ var FoPost = class {
   workspaces;
   labels;
   ai;
+  inbox;
+  ads;
   constructor(opts) {
     this.http = new HttpClient(opts);
     this.posts = new PostsResource(this.http);
@@ -31548,6 +31550,8 @@ var FoPost = class {
     this.workspaces = new WorkspacesResource(this.http);
     this.labels = new LabelsResource(this.http);
     this.ai = new AiResource(this.http);
+    this.inbox = new InboxResource(this.http);
+    this.ads = new AdsResource(this.http);
   }
 };
 function accountIds(accounts) {
@@ -31559,7 +31563,7 @@ var PostsResource = class {
   }
   http;
   list(params) {
-    return this.http.get("/api/v1/posts", {
+    return this.http.get("/v1/posts", {
       workspace_id: params.workspaceId,
       status: params.status,
       limit: params.limit,
@@ -31567,10 +31571,10 @@ var PostsResource = class {
     });
   }
   get(id) {
-    return this.http.get(`/api/v1/posts/${id}`);
+    return this.http.get(`/v1/posts/${id}`);
   }
   create(input) {
-    return this.http.post("/api/v1/posts", {
+    return this.http.post("/v1/posts", {
       workspace_id: input.workspaceId,
       status: input.status ?? "draft",
       content: input.content,
@@ -31588,25 +31592,25 @@ var PostsResource = class {
     if (input.accounts !== void 0) body.accounts = accountIds(input.accounts);
     if (input.labels !== void 0) body.labels = input.labels;
     if (input.title !== void 0) body.title = input.title;
-    return this.http.put(`/api/v1/posts/${id}`, body);
+    return this.http.put(`/v1/posts/${id}`, body);
   }
   delete(id) {
-    return this.http.delete(`/api/v1/posts/${id}`);
+    return this.http.delete(`/v1/posts/${id}`);
   }
   publish(id) {
-    return this.http.post(`/api/v1/posts/${id}/publish`);
+    return this.http.post(`/v1/posts/${id}/publish`);
   }
   cancel(id) {
-    return this.http.post(`/api/v1/posts/${id}/cancel`);
+    return this.http.post(`/v1/posts/${id}/cancel`);
   }
   retry(id) {
-    return this.http.post(`/api/v1/posts/${id}/retry`);
+    return this.http.post(`/v1/posts/${id}/retry`);
   }
   preflight(id) {
-    return this.http.post(`/api/v1/posts/${id}/preflight`);
+    return this.http.post(`/v1/posts/${id}/preflight`);
   }
   deliveries(id) {
-    return this.http.get(`/api/v1/posts/${id}/deliveries`);
+    return this.http.get(`/v1/posts/${id}/deliveries`);
   }
 };
 var AccountsResource = class {
@@ -31615,15 +31619,15 @@ var AccountsResource = class {
   }
   http;
   list(params) {
-    return this.http.get("/api/v1/accounts", {
+    return this.http.get("/v1/accounts", {
       workspace_id: params.workspaceId
     });
   }
   get(id) {
-    return this.http.get(`/api/v1/accounts/${id}`);
+    return this.http.get(`/v1/accounts/${id}`);
   }
   health(id) {
-    return this.http.get(`/api/v1/accounts/${id}/health`);
+    return this.http.get(`/v1/accounts/${id}/health`);
   }
 };
 var WorkspacesResource = class {
@@ -31632,10 +31636,10 @@ var WorkspacesResource = class {
   }
   http;
   list() {
-    return this.http.get("/api/v1/workspaces");
+    return this.http.get("/v1/workspaces");
   }
   get(id) {
-    return this.http.get(`/api/v1/workspaces/${id}`);
+    return this.http.get(`/v1/workspaces/${id}`);
   }
 };
 var LabelsResource = class {
@@ -31644,7 +31648,7 @@ var LabelsResource = class {
   }
   http;
   list(params) {
-    return this.http.get("/api/v1/labels", { workspace_id: params.workspaceId });
+    return this.http.get("/v1/labels", { workspace_id: params.workspaceId });
   }
 };
 var AiResource = class {
@@ -31653,10 +31657,10 @@ var AiResource = class {
   }
   http;
   credits() {
-    return this.http.get("/api/v1/ai/credits");
+    return this.http.get("/v1/ai/credits");
   }
   generateCaption(input) {
-    return this.http.post("/api/v1/ai/generate-caption", {
+    return this.http.post("/v1/ai/generate-caption", {
       current_caption: input.currentCaption,
       image_urls: input.imageUrls,
       platforms: input.platforms,
@@ -31666,10 +31670,217 @@ var AiResource = class {
     });
   }
   rewrite(input) {
-    return this.http.post("/api/v1/ai/rewrite", input);
+    return this.http.post("/v1/ai/rewrite", input);
   }
   repurposeUrl(input) {
-    return this.http.post("/api/v1/ai/repurpose-url", input);
+    return this.http.post("/v1/ai/repurpose-url", input);
+  }
+};
+var InboxResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  /** Comments, mentions and DMs, newest first. Paginated: the result carries `meta`. */
+  list(params = {}) {
+    return this.http.get("/v1/inbox", {
+      workspace_id: params.workspaceId,
+      type: params.type,
+      state: params.state,
+      platform: params.platform,
+      account_id: params.accountId,
+      post_id: params.postId,
+      post_external_id: params.postExternalId,
+      conversation_id: params.conversationId,
+      direction: params.direction,
+      q: params.q,
+      sort: params.sort,
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+  /** One row per platform post with comments, or per post we were mentioned in. */
+  threads(params = {}) {
+    return this.http.get("/v1/inbox/posts", {
+      workspace_id: params.workspaceId,
+      kind: params.kind,
+      platform: params.platform,
+      account_id: params.accountId,
+      state: params.state,
+      q: params.q,
+      sort: params.sort,
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+  /** One row per DM thread, latest first. */
+  conversations(params = {}) {
+    return this.http.get("/v1/inbox/conversations", {
+      workspace_id: params.workspaceId,
+      platform: params.platform,
+      account_id: params.accountId,
+      state: params.state,
+      q: params.q,
+      sort: params.sort,
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+  unreadCount(params = {}) {
+    return this.http.get("/v1/inbox/unread-count", {
+      workspace_id: params.workspaceId
+    });
+  }
+  accounts(params = {}) {
+    return this.http.get("/v1/inbox/accounts", {
+      workspace_id: params.workspaceId
+    });
+  }
+  platforms() {
+    return this.http.get("/v1/inbox/platforms");
+  }
+  markThreadRead(input) {
+    return this.http.post("/v1/inbox/read", {
+      workspace_id: input.workspaceId,
+      account_id: input.accountId,
+      post_external_id: input.postExternalId,
+      conversation_id: input.conversationId
+    });
+  }
+  /** Poll every inbox-capable account in the workspace now. */
+  refresh(workspaceId) {
+    return this.http.post("/v1/inbox/refresh", { workspace_id: workspaceId });
+  }
+  update(id, input) {
+    return this.http.request("PATCH", `/v1/inbox/${id}`, input);
+  }
+  /** Sends the reply on the platform as the connected account. */
+  reply(id, text) {
+    return this.http.post(`/v1/inbox/${id}/reply`, { text });
+  }
+  hide(id) {
+    return this.http.post(`/v1/inbox/${id}/hide`);
+  }
+  unhide(id) {
+    return this.http.post(`/v1/inbox/${id}/unhide`);
+  }
+  /** Deletes the comment on the platform. */
+  delete(id) {
+    return this.http.delete(`/v1/inbox/${id}`);
+  }
+  /** Replies an automation or the agent drafted that a person still has to send. */
+  listApprovals(params = {}) {
+    return this.http.get("/v1/inbox/approvals", {
+      workspace_id: params.workspaceId
+    });
+  }
+  /** Sends the draft, or `text` in its place. */
+  approveReply(id, text) {
+    return this.http.post(`/v1/inbox/approvals/${id}/approve`, text === void 0 ? {} : { text });
+  }
+  rejectReply(id) {
+    return this.http.post(`/v1/inbox/approvals/${id}/reject`);
+  }
+};
+var AdsResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  /** Boosts and ads created through FoPost, with insights from their last refresh. */
+  list(params = {}) {
+    return this.http.get("/v1/ads", { workspace_id: params.workspaceId });
+  }
+  /** Ads on the connected ad accounts that were made elsewhere. Read live, never stored. */
+  external(params = {}) {
+    return this.http.get("/v1/ads/external", { workspace_id: params.workspaceId });
+  }
+  boostable(params = {}) {
+    return this.http.get("/v1/ads/boostable", {
+      workspace_id: params.workspaceId
+    });
+  }
+  connections(params = {}) {
+    return this.http.get("/v1/ads/connections", {
+      workspace_id: params.workspaceId
+    });
+  }
+  /** Each connection with the ad accounts and Pages its grant reaches. */
+  sources(params = {}) {
+    return this.http.get("/v1/ads/sources", { workspace_id: params.workspaceId });
+  }
+  /** Returns the Meta login URL; the caller finishes it in their own browser. */
+  authorizeMeta(input) {
+    return this.http.post("/v1/ads/connections/meta/authorize", input);
+  }
+  /** Also deletes every ad record created through the connection. */
+  deleteConnection(id, workspaceId) {
+    return this.http.request("DELETE", `/v1/ads/connections/${id}`, void 0, {
+      workspace_id: workspaceId
+    });
+  }
+  /** Needs the `publish` scope as well as `ads`. Starts paused unless `paused` is false. */
+  boost(input) {
+    return this.http.post("/v1/ads/boost", input);
+  }
+  /** Needs the `publish` scope as well as `ads`. Starts paused unless `paused` is false. */
+  create(input) {
+    return this.http.post("/v1/ads", input);
+  }
+  /** Reads the delivery status and lifetime insights from Meta. */
+  refresh(id, workspaceId) {
+    return this.http.request("POST", `/v1/ads/${id}/refresh`, void 0, {
+      workspace_id: workspaceId
+    });
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  setStatus(id, workspaceId, status) {
+    return this.http.request(
+      "PATCH",
+      `/v1/ads/${id}`,
+      { status },
+      { workspace_id: workspaceId }
+    );
+  }
+  /** Ends delivery and deletes the ad on Meta. Needs the `publish` scope as well as `ads`. */
+  delete(id, workspaceId) {
+    return this.http.request("DELETE", `/v1/ads/${id}`, void 0, { workspace_id: workspaceId });
+  }
+  audiences(params) {
+    return this.http.get("/v1/ads/audiences", {
+      workspace_id: params.workspaceId,
+      connection_id: params.connectionId,
+      ad_account_id: params.adAccountId
+    });
+  }
+  createAudience(input) {
+    return this.http.post("/v1/ads/audiences", input);
+  }
+  /** Locations, interests, behaviours and income brackets as Meta names them. */
+  searchTargeting(params) {
+    return this.http.get("/v1/ads/targeting/search", {
+      workspace_id: params.workspaceId,
+      connection_id: params.connectionId,
+      type: params.type,
+      q: params.q
+    });
+  }
+  leadForms(params = {}) {
+    return this.http.get("/v1/ads/lead-forms", {
+      workspace_id: params.workspaceId
+    });
+  }
+  createLeadForm(input) {
+    return this.http.post("/v1/ads/lead-forms", input);
+  }
+  /** One page of leads; pass `nextCursor` back as `after` for the next. */
+  leads(formId, params) {
+    return this.http.get(`/v1/ads/lead-forms/${formId}/leads`, {
+      workspace_id: params.workspaceId,
+      connection_id: params.connectionId,
+      page_id: params.pageId,
+      after: params.after
+    });
   }
 };
 
