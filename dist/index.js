@@ -31457,7 +31457,116 @@ var __webpack_exports__ = {};
 
 // EXTERNAL MODULE: ./node_modules/@actions/core/lib/core.js
 var core = __nccwpck_require__(7484);
+;// CONCATENATED MODULE: ./node_modules/@fopost/sdk/dist/chunk-5OGCX3EB.js
+// src/webhooks.ts
+var SIGNATURE_TOLERANCE_SECONDS = 300;
+var SIGNATURE_HEADER = "x-fopost-signature";
+var TIMESTAMPED_SIGNATURE_HEADER = "x-fopost-signature-256";
+var TIMESTAMP_HEADER = "x-fopost-timestamp";
+var EVENT_HEADER = "x-fopost-event";
+var DELIVERY_HEADER = "x-fopost-delivery";
+var WebhookError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "WebhookError";
+  }
+};
+function webhookHeader(source, name) {
+  if (typeof source.get === "function") {
+    return source.get(name) ?? source.get(name.toLowerCase()) ?? null;
+  }
+  const record = source;
+  const key = Object.keys(record).find((k) => k.toLowerCase() === name.toLowerCase());
+  if (key === void 0) return null;
+  const value = record[key];
+  return Array.isArray(value) ? value[0] ?? null : value ?? null;
+}
+var encoder = new TextEncoder();
+function toBytes(body) {
+  if (typeof body === "string") return encoder.encode(body);
+  return body instanceof Uint8Array ? body : new Uint8Array(body);
+}
+function concat(prefix, body) {
+  const out = new Uint8Array(prefix.length + body.length);
+  out.set(prefix, 0);
+  out.set(body, prefix.length);
+  return out;
+}
+var hex = (bytes) => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+async function hmac(secret, message) {
+  const key = await globalThis.crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  return hex(await globalThis.crypto.subtle.sign("HMAC", key, message));
+}
+function equals(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+var digest = (value) => value === null ? null : value.startsWith("sha256=") ? value.slice(7) : value;
+async function verifyWebhookSignature(rawBody, headers, secret) {
+  if (!secret) {
+    throw new WebhookError("missing_secret", "Pass the webhook secret to verify a delivery");
+  }
+  const body = toBytes(rawBody);
+  const timestamped = digest(webhookHeader(headers, TIMESTAMPED_SIGNATURE_HEADER));
+  if (timestamped !== null) {
+    const timestamp = webhookHeader(headers, TIMESTAMP_HEADER);
+    const sentAt = Number(timestamp);
+    if (timestamp === null || timestamp === "" || !Number.isFinite(sentAt)) {
+      throw new WebhookError("invalid_signature", "Signed delivery carries no timestamp");
+    }
+    const age = Math.abs(Date.now() / 1e3 - sentAt);
+    if (age > SIGNATURE_TOLERANCE_SECONDS) {
+      throw new WebhookError("stale_delivery", `Delivery is ${Math.round(age)}s old`);
+    }
+    const signed = concat(encoder.encode(`${timestamp}.`), body);
+    if (!equals(timestamped, await hmac(secret, signed))) {
+      throw new WebhookError("invalid_signature", "Signature does not match the body");
+    }
+    return;
+  }
+  const plain = digest(webhookHeader(headers, SIGNATURE_HEADER));
+  if (plain === null) {
+    throw new WebhookError("invalid_signature", "Delivery carries no signature header");
+  }
+  if (!equals(plain, await hmac(secret, body))) {
+    throw new WebhookError("invalid_signature", "Signature does not match the body");
+  }
+}
+async function verifyWebhook(rawBody, headers, secret) {
+  await verifyWebhookSignature(rawBody, headers, secret);
+  let envelope;
+  try {
+    const text = typeof rawBody === "string" ? rawBody : new TextDecoder().decode(toBytes(rawBody));
+    envelope = JSON.parse(text);
+  } catch {
+    throw new WebhookError("invalid_body", "Webhook body is not JSON");
+  }
+  if (typeof envelope?.event !== "string") {
+    throw new WebhookError("invalid_body", "Webhook body carries no event");
+  }
+  return {
+    event: envelope.event,
+    data: envelope.data,
+    timestamp: typeof envelope.timestamp === "string" ? envelope.timestamp : null
+  };
+}
+var webhooks = { verify: verifyWebhook, verifySignature: verifyWebhookSignature };
+
+
+
 ;// CONCATENATED MODULE: ./node_modules/@fopost/sdk/dist/index.js
+
+
 // src/client.ts
 var FoPostError = class extends Error {
   status;
@@ -31475,6 +31584,7 @@ var DEFAULT_BASE_URL = "https://api.fopost.com";
 var HttpClient = class {
   apiKey;
   baseUrl;
+  /** The fetch in use; direct uploads PUT bytes through it without the API key. */
   fetchImpl;
   constructor(opts) {
     if (!opts.apiKey) {
@@ -31488,18 +31598,26 @@ var HttpClient = class {
     const url = new URL(this.baseUrl + path);
     if (query) {
       for (const [k, v] of Object.entries(query)) {
-        if (v !== void 0 && v !== null) url.searchParams.set(k, String(v));
+        if (v === void 0 || v === null) continue;
+        if (Array.isArray(v)) {
+          for (const item of v) url.searchParams.append(k, String(item));
+          continue;
+        }
+        url.searchParams.set(k, String(v));
       }
     }
+    const isForm = body instanceof FormData;
+    const headers = {
+      "X-API-Key": this.apiKey,
+      "User-Agent": "@fopost/sdk"
+    };
+    if (!isForm) headers["Content-Type"] = "application/json";
     const res = await this.fetchImpl(url.toString(), {
       method,
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": this.apiKey,
-        "User-Agent": "@fopost/sdk"
-      },
-      body: body ? JSON.stringify(body) : void 0
+      headers,
+      body: isForm ? body : body ? JSON.stringify(body) : void 0
     });
+    if (res.status === 204) return void 0;
     const contentType = res.headers.get("content-type") ?? "";
     if (!contentType.includes("application/json")) {
       if (!res.ok) {
@@ -31527,6 +31645,9 @@ var HttpClient = class {
   put(path, body) {
     return this.request("PUT", path, body);
   }
+  patch(path, body) {
+    return this.request("PATCH", path, body);
+  }
   delete(path, body) {
     return this.request("DELETE", path, body);
   }
@@ -31538,28 +31659,122 @@ var FoPost = class {
   // Resource namespaces — bound below in constructor.
   posts;
   accounts;
+  accountGroups;
   workspaces;
   labels;
   ai;
+  inbox;
+  contacts;
+  broadcasts;
+  sequences;
+  ads;
+  validate;
+  media;
+  whatsapp;
+  analytics;
+  knowledge;
+  activity;
+  googleBusiness;
+  blog;
+  blogs;
   constructor(opts) {
     this.http = new HttpClient(opts);
-    this.posts = new PostsResource(this.http);
     this.accounts = new AccountsResource(this.http);
+    this.accountGroups = new AccountGroupsResource(this.http);
     this.workspaces = new WorkspacesResource(this.http);
     this.labels = new LabelsResource(this.http);
     this.ai = new AiResource(this.http);
+    this.inbox = new InboxResource(this.http);
+    this.contacts = new ContactsResource(this.http);
+    this.broadcasts = new BroadcastsResource(this.http);
+    this.sequences = new SequencesResource(this.http);
+    this.ads = new AdsResource(this.http);
+    this.validate = new ValidateResource(this.http);
+    this.media = new MediaResource(this.http);
+    this.whatsapp = new WhatsappResource(this.http);
+    this.posts = new PostsResource(this.http, this.media);
+    this.analytics = new AnalyticsResource(this.http);
+    this.knowledge = new KnowledgeResource(this.http);
+    this.activity = new ActivityResource(this.http);
+    this.googleBusiness = new GoogleBusinessResource(this.http);
+    this.blog = new BlogResource(this.http);
+    this.blogs = new BlogsResource(this.http);
+  }
+};
+var ActivityResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  /**
+   * What happened in a workspace, newest first. Omit `workspaceId` to read
+   * every workspace the key can reach. `kind: 'security'` is the audit log.
+   */
+  async list(params = {}) {
+    const raw = await this.http.get("/v1/activity", {
+      workspace_id: params.workspaceId,
+      kind: params.kind,
+      from: params.from,
+      to: params.to,
+      cursor: params.cursor,
+      limit: params.limit
+    });
+    return {
+      data: raw.data.map((r) => ({
+        id: r.id,
+        workspaceId: r.workspace_id ?? null,
+        kind: r.kind,
+        refType: r.ref_type ?? null,
+        refId: r.ref_id ?? null,
+        summary: r.summary,
+        actor: r.actor,
+        time: r.time
+      })),
+      meta: { nextCursor: raw.meta?.next_cursor ?? null }
+    };
   }
 };
 function accountIds(accounts) {
   return accounts.map((a) => typeof a === "string" ? a : a.id);
 }
+function toForm(body, files) {
+  const form = new FormData();
+  form.append("post", JSON.stringify(body));
+  for (const f of files) {
+    const blob = f.data instanceof Blob ? f.data : new Blob([f.data], { type: f.mimeType });
+    form.append("files", blob, f.filename);
+  }
+  return form;
+}
+var MULTIPART_MAX_FILE_BYTES = 100 * 1024 * 1024;
+function normalizeFile(file) {
+  if (file instanceof Blob) {
+    const name = file.name;
+    return { data: file, filename: name || "file", mimeType: file.type, size: file.size };
+  }
+  const size = file.data instanceof Blob ? file.data.size : file.data.byteLength;
+  return { data: file.data, filename: file.filename, mimeType: file.mimeType, size };
+}
+function mediaTypeFor(mimeType) {
+  if (mimeType === "image/gif") return "gif";
+  if (mimeType.startsWith("video/")) return "video";
+  return "image";
+}
+function withMedia(content, items) {
+  const blocks = content && content.length > 0 ? [...content] : [{}];
+  const first = blocks[0];
+  blocks[0] = { ...first, media: [...first.media ?? [], ...items] };
+  return blocks;
+}
 var PostsResource = class {
-  constructor(http) {
+  constructor(http, media) {
     this.http = http;
+    this.media = media;
   }
   http;
+  media;
   list(params) {
-    return this.http.get("/api/v1/posts", {
+    return this.http.get("/v1/posts", {
       workspace_id: params.workspaceId,
       status: params.status,
       limit: params.limit,
@@ -31567,20 +31782,29 @@ var PostsResource = class {
     });
   }
   get(id) {
-    return this.http.get(`/api/v1/posts/${id}`);
+    return this.http.get(`/v1/posts/${id}`);
   }
-  create(input) {
-    return this.http.post("/api/v1/posts", {
+  async create(input) {
+    const body = {
       workspace_id: input.workspaceId,
       status: input.status ?? "draft",
       content: input.content,
       schedule_at: input.scheduleAt,
-      accounts: accountIds(input.accounts),
+      accounts: input.accounts === void 0 ? void 0 : accountIds(input.accounts),
+      account_group_id: input.accountGroupId,
       labels: input.labels,
       title: input.title
-    });
+    };
+    const files = (input.files ?? []).map(normalizeFile);
+    if (files.length === 0) return this.http.post("/v1/posts", body);
+    if (await this.fitsMultipart(files, input.workspaceId)) {
+      return this.http.post("/v1/posts", toForm(body, files));
+    }
+    const items = await this.uploadAll(files, input.workspaceId);
+    body.content = withMedia(input.content, items);
+    return this.http.post("/v1/posts", body);
   }
-  update(id, input) {
+  async update(id, input) {
     const body = {};
     if (input.status !== void 0) body.status = input.status;
     if (input.content !== void 0) body.content = input.content;
@@ -31588,25 +31812,59 @@ var PostsResource = class {
     if (input.accounts !== void 0) body.accounts = accountIds(input.accounts);
     if (input.labels !== void 0) body.labels = input.labels;
     if (input.title !== void 0) body.title = input.title;
-    return this.http.put(`/api/v1/posts/${id}`, body);
+    const files = (input.files ?? []).map(normalizeFile);
+    if (files.length === 0) return this.http.put(`/v1/posts/${id}`, body);
+    if (await this.fitsMultipart(files)) {
+      return this.http.put(`/v1/posts/${id}`, toForm(body, files));
+    }
+    const post = await this.get(id);
+    const items = await this.uploadAll(files, post.workspaceId);
+    body.content = withMedia(input.content ?? post.content ?? [], items);
+    return this.http.put(`/v1/posts/${id}`, body);
+  }
+  async fitsMultipart(files, workspaceId) {
+    let ceiling = MULTIPART_MAX_FILE_BYTES;
+    try {
+      ceiling = (await this.media.limits(workspaceId)).multipartMaxFileBytes;
+    } catch {
+    }
+    return files.every((f) => f.size <= ceiling);
+  }
+  async uploadAll(files, workspaceId) {
+    const items = [];
+    for (const f of files) {
+      const uploaded = await this.media.uploadDirect({
+        workspaceId,
+        filename: f.filename,
+        mimeType: f.mimeType,
+        data: f.data
+      });
+      items.push({
+        type: mediaTypeFor(f.mimeType),
+        name: uploaded.name,
+        url: uploaded.url,
+        size: uploaded.size
+      });
+    }
+    return items;
   }
   delete(id) {
-    return this.http.delete(`/api/v1/posts/${id}`);
+    return this.http.delete(`/v1/posts/${id}`);
   }
   publish(id) {
-    return this.http.post(`/api/v1/posts/${id}/publish`);
+    return this.http.post(`/v1/posts/${id}/publish`);
   }
   cancel(id) {
-    return this.http.post(`/api/v1/posts/${id}/cancel`);
+    return this.http.post(`/v1/posts/${id}/cancel`);
   }
   retry(id) {
-    return this.http.post(`/api/v1/posts/${id}/retry`);
+    return this.http.post(`/v1/posts/${id}/retry`);
   }
   preflight(id) {
-    return this.http.post(`/api/v1/posts/${id}/preflight`);
+    return this.http.post(`/v1/posts/${id}/preflight`);
   }
   deliveries(id) {
-    return this.http.get(`/api/v1/posts/${id}/deliveries`);
+    return this.http.get(`/v1/posts/${id}/deliveries`);
   }
 };
 var AccountsResource = class {
@@ -31615,15 +31873,501 @@ var AccountsResource = class {
   }
   http;
   list(params) {
-    return this.http.get("/api/v1/accounts", {
+    return this.http.get("/v1/accounts", {
+      workspace_id: params.workspaceId,
+      group_id: params.groupId
+    });
+  }
+  get(id) {
+    return this.http.get(`/v1/accounts/${id}`);
+  }
+  health(id) {
+    return this.http.get(`/v1/accounts/${id}/health`);
+  }
+  /**
+   * The numbers only this account's network reports, keyed by the platform's own
+   * metric names — ad-break earnings, story taps, a retention curve, the search
+   * terms behind a listing. Read from the newest collected snapshot, never live.
+   *
+   * A network whose metric access has not been granted yet answers 503
+   * (`platform_metrics_unavailable`) rather than an empty set.
+   */
+  async platformMetrics(id) {
+    const raw = await this.http.get(`/v1/accounts/${id}/insights`, {
+      raw: "true"
+    });
+    return {
+      platform: raw.platform,
+      account: {
+        fetchedAt: raw.account?.fetched_at ?? null,
+        metrics: raw.account?.metrics ?? []
+      },
+      post: {
+        externalPostId: raw.post?.external_post_id ?? null,
+        fetchedAt: raw.post?.fetched_at ?? null,
+        metrics: raw.post?.metrics ?? []
+      }
+    };
+  }
+  /** Sets a display name; null or an empty string restores the platform name. */
+  update(id, input) {
+    return this.http.patch(`/v1/accounts/${id}`, {
+      display_name: input.displayName
+    });
+  }
+  /** Needs ownership of both workspaces; a 409 move_blocked lists blocking_tables on err.body. */
+  move(id, input) {
+    return this.http.post(`/v1/accounts/${id}/move`, {
+      workspace_id: input.workspaceId
+    });
+  }
+  /** Mints a one-time code; send `/connect <code>` to the bot in a chat to connect it. */
+  createTelegramConnectCode(input = {}) {
+    return this.http.post("/v1/accounts/telegram/connect-code", {
+      workspaceId: input.workspaceId
+    });
+  }
+  getTelegramConnectStatus(code) {
+    return this.http.get("/v1/accounts/telegram/connect-code/status", {
+      code
+    });
+  }
+  getTelegramBotCommands(id) {
+    return this.http.get(`/v1/accounts/${id}/telegram/commands`);
+  }
+  /** Replaces the bot's command menu for this chat. */
+  setTelegramBotCommands(id, commands) {
+    return this.http.put(`/v1/accounts/${id}/telegram/commands`, {
+      commands
+    });
+  }
+  deleteTelegramBotCommands(id) {
+    return this.http.delete(`/v1/accounts/${id}/telegram/commands`);
+  }
+  /** Subreddits the account is in, busiest first, plus its own profile page. */
+  listRedditSubreddits(id) {
+    return this.http.get(`/v1/accounts/${id}/reddit/subreddits`);
+  }
+  /** The rules a subreddit publishes, in its own order. */
+  listRedditSubredditRules(id, subreddit) {
+    return this.http.get(
+      `/v1/accounts/${id}/reddit/subreddits/${encodeURIComponent(subreddit)}/rules`
+    );
+  }
+  /** Post flairs one subreddit offers; a flair id is valid only there. */
+  listRedditFlairs(id, subreddit) {
+    return this.http.get(`/v1/accounts/${id}/reddit/flairs`, { subreddit });
+  }
+  /** Where posts go when a post names no subreddit; null falls back to the profile page. */
+  setRedditDefaultSubreddit(id, subreddit) {
+    return this.http.put(`/v1/accounts/${id}/reddit/default-subreddit`, {
+      subreddit
+    });
+  }
+  /** Public channels, plus private ones the app was invited to. */
+  listSlackChannels(id) {
+    return this.http.get(`/v1/accounts/${id}/slack/channels`);
+  }
+  /** People in the Slack workspace; a member's id is the handle for `inbox.startConversation`. */
+  listSlackMembers(id) {
+    return this.http.get(`/v1/accounts/${id}/slack/members`);
+  }
+  getSlackIdentity(id) {
+    return this.http.get(`/v1/accounts/${id}/slack/identity`);
+  }
+  /** Omitted fields keep their value and null clears one; setting one icon clears the other. */
+  updateSlackIdentity(id, input) {
+    const body = {};
+    if (input.username !== void 0) body.username = input.username;
+    if (input.iconUrl !== void 0) body.icon_url = input.iconUrl;
+    if (input.iconEmoji !== void 0) body.icon_emoji = input.iconEmoji;
+    return this.http.patch(`/v1/accounts/${id}/slack/identity`, body);
+  }
+  // ─── Meta messaging settings (Facebook Pages, Instagram) ────────
+  /** The prompts shown before the first message. Networks without them answer 400. */
+  getIceBreakers(id) {
+    return this.http.get(`/v1/accounts/${id}/messaging/ice-breakers`);
+  }
+  /** Replaces the ice breakers. Up to four. */
+  setIceBreakers(id, iceBreakers) {
+    return this.http.put(`/v1/accounts/${id}/messaging/ice-breakers`, {
+      ice_breakers: iceBreakers
+    });
+  }
+  deleteIceBreakers(id) {
+    return this.http.delete(`/v1/accounts/${id}/messaging/ice-breakers`);
+  }
+  /** The always-visible Messenger menu. Facebook Pages only. */
+  getPersistentMenu(id) {
+    return this.http.get(`/v1/accounts/${id}/messaging/persistent-menu`);
+  }
+  /** Replaces the menu, one entry per locale, up to three items each. */
+  setPersistentMenu(id, menu) {
+    return this.http.put(`/v1/accounts/${id}/messaging/persistent-menu`, {
+      persistent_menu: menu
+    });
+  }
+  deletePersistentMenu(id) {
+    return this.http.delete(`/v1/accounts/${id}/messaging/persistent-menu`);
+  }
+  /** The text shown before a Messenger conversation starts. Facebook Pages only. */
+  getGreeting(id) {
+    return this.http.get(`/v1/accounts/${id}/messaging/greeting`);
+  }
+  /** Replaces the greeting, one entry per locale, each up to 160 characters. */
+  setGreeting(id, greeting) {
+    return this.http.put(`/v1/accounts/${id}/messaging/greeting`, { greeting });
+  }
+  deleteGreeting(id) {
+    return this.http.delete(`/v1/accounts/${id}/messaging/greeting`);
+  }
+  /** What the network is delivering to the FoPost webhook for this account. */
+  getWebhookSubscription(id) {
+    return this.http.get(`/v1/accounts/${id}/webhook-subscription`);
+  }
+  /** Subscribes to every field this account needs, lapsed or not. */
+  resubscribeWebhook(id) {
+    return this.http.post(`/v1/accounts/${id}/webhook-subscription`);
+  }
+  // ── Discord (bot connections; a webhook one answers 409 webhook_connection) ──
+  /** Text channels the bot can post to, with `is_current` on this account's. */
+  listDiscordChannels(id) {
+    return this.http.get(`/v1/accounts/${id}/discord/channels`);
+  }
+  /** Moves the account to another channel in the same server. */
+  switchDiscordChannel(id, channelId) {
+    return this.http.patch(`/v1/accounts/${id}/discord/channels/current`, {
+      channel_id: channelId
+    });
+  }
+  getDiscordIdentity(id) {
+    return this.http.get(`/v1/accounts/${id}/discord/identity`);
+  }
+  /** Omitted fields keep their value and null clears one. */
+  updateDiscordIdentity(id, input) {
+    const body = {};
+    if (input.username !== void 0) body.username = input.username;
+    if (input.avatarUrl !== void 0) body.avatar_url = input.avatarUrl;
+    return this.http.patch(`/v1/accounts/${id}/discord/identity`, body);
+  }
+  listDiscordPins(id) {
+    return this.http.get(`/v1/accounts/${id}/discord/messages/pinned`);
+  }
+  deleteDiscordMessage(id, messageId) {
+    return this.http.delete(
+      `/v1/accounts/${id}/discord/messages/${messageId}`
+    );
+  }
+  pinDiscordMessage(id, messageId) {
+    return this.http.post(
+      `/v1/accounts/${id}/discord/messages/${messageId}/pin`
+    );
+  }
+  unpinDiscordMessage(id, messageId) {
+    return this.http.delete(
+      `/v1/accounts/${id}/discord/messages/${messageId}/pin`
+    );
+  }
+  /** Publishes an announcement-channel message to every server following it. */
+  crosspostDiscordMessage(id, messageId) {
+    return this.http.post(
+      `/v1/accounts/${id}/discord/messages/${messageId}/crosspost`
+    );
+  }
+  createDiscordThread(id, messageId, input) {
+    return this.http.post(`/v1/accounts/${id}/discord/messages/${messageId}/thread`, {
+      name: input.name,
+      ...input.autoArchiveDuration !== void 0 ? { auto_archive_duration: input.autoArchiveDuration } : {}
+    });
+  }
+  /** Sends one message to a member; `memberId` is a `DiscordMember.id`. */
+  sendDiscordDm(id, memberId, content) {
+    return this.http.post(`/v1/accounts/${id}/discord/dm`, {
+      member_id: memberId,
+      content
+    });
+  }
+  listDiscordEvents(id) {
+    return this.http.get(`/v1/accounts/${id}/discord/events`);
+  }
+  getDiscordEvent(id, eventId) {
+    return this.http.get(`/v1/accounts/${id}/discord/events/${eventId}`);
+  }
+  createDiscordEvent(id, input) {
+    return this.http.post(
+      `/v1/accounts/${id}/discord/events`,
+      discordEventBody(input)
+    );
+  }
+  updateDiscordEvent(id, eventId, input) {
+    return this.http.patch(
+      `/v1/accounts/${id}/discord/events/${eventId}`,
+      discordEventBody(input)
+    );
+  }
+  deleteDiscordEvent(id, eventId) {
+    return this.http.delete(`/v1/accounts/${id}/discord/events/${eventId}`);
+  }
+  /** `query` searches by username or nickname prefix. */
+  listDiscordMembers(id, options = {}) {
+    return this.http.get(`/v1/accounts/${id}/discord/members`, {
+      q: options.query,
+      limit: options.limit
+    });
+  }
+  getDiscordMember(id, memberId) {
+    return this.http.get(`/v1/accounts/${id}/discord/members/${memberId}`);
+  }
+  listDiscordRoles(id) {
+    return this.http.get(`/v1/accounts/${id}/discord/roles`);
+  }
+  createDiscordRole(id, input) {
+    return this.http.post(`/v1/accounts/${id}/discord/roles`, input);
+  }
+  updateDiscordRole(id, roleId, input) {
+    return this.http.patch(`/v1/accounts/${id}/discord/roles/${roleId}`, input);
+  }
+  deleteDiscordRole(id, roleId) {
+    return this.http.delete(`/v1/accounts/${id}/discord/roles/${roleId}`);
+  }
+  addDiscordMemberRole(id, roleId, memberId) {
+    return this.http.put(
+      `/v1/accounts/${id}/discord/roles/${roleId}/members/${memberId}`
+    );
+  }
+  removeDiscordMemberRole(id, roleId, memberId) {
+    return this.http.delete(
+      `/v1/accounts/${id}/discord/roles/${roleId}/members/${memberId}`
+    );
+  }
+  // ─── Per-network extras ────────────────────────────────────────
+  /** Boards this Pinterest connection can pin to. */
+  listPinterestBoards(id) {
+    return this.http.get(`/v1/accounts/${id}/pinterest/boards`);
+  }
+  createPinterestBoard(id, input) {
+    return this.http.post(`/v1/accounts/${id}/pinterest/boards`, {
+      name: input.name,
+      description: input.description,
+      privacy: input.privacy
+    });
+  }
+  /** The channel's playlists, with the stored default marked. */
+  listYouTubePlaylists(id) {
+    return this.http.get(`/v1/accounts/${id}/youtube/playlists`);
+  }
+  createYouTubePlaylist(id, input) {
+    return this.http.post(`/v1/accounts/${id}/youtube/playlists`, {
+      title: input.title,
+      description: input.description,
+      privacy: input.privacy
+    });
+  }
+  /** The playlist a new video joins when the post picks none; null clears it. */
+  setDefaultYouTubePlaylist(id, playlistId) {
+    return this.http.put(
+      `/v1/accounts/${id}/youtube/playlists/default`,
+      { playlist_id: playlistId }
+    );
+  }
+  listYouTubeCaptions(id, videoId) {
+    return this.http.get(
+      `/v1/accounts/${id}/youtube/videos/${videoId}/captions`
+    );
+  }
+  /** `body` is the subtitle file; YouTube reads SRT and WebVTT and sniffs which. */
+  uploadYouTubeCaptions(id, videoId, input) {
+    return this.http.post(
+      `/v1/accounts/${id}/youtube/videos/${videoId}/captions`,
+      {
+        language: input.language,
+        name: input.name,
+        body: input.body,
+        is_draft: input.isDraft
+      }
+    );
+  }
+  readYouTubeTranscript(id, captionId) {
+    return this.http.get(`/v1/accounts/${id}/youtube/captions/${captionId}`);
+  }
+  /** What a post from this Bluesky connection is written in when it does not say. */
+  getBlueskyLanguages(id) {
+    return this.http.get(`/v1/accounts/${id}/bluesky/languages`);
+  }
+  /** Up to three BCP-47 tags; an empty list clears the default. */
+  setBlueskyLanguages(id, languages) {
+    return this.http.put(`/v1/accounts/${id}/bluesky/languages`, { languages });
+  }
+  /** The switches TikTok enforces at publish time, set on the account itself. */
+  getTikTokCreatorInfo(id) {
+    return this.http.get(`/v1/accounts/${id}/tiktok/creator-info`);
+  }
+  /**
+   * TikTok's Commercial Music Library. Needs the Marketing API product on the
+   * TikTok app; without it the call throws a 403 rather than answering empty.
+   */
+  searchTikTokMusic(id, params) {
+    return this.http.get(`/v1/accounts/${id}/tiktok/music`, {
+      q: params.q,
+      limit: params.limit
+    });
+  }
+  /** Places a post can be tagged with. Same TikTok product as the music library. */
+  searchTikTokLocations(id, params) {
+    return this.http.get(`/v1/accounts/${id}/tiktok/locations`, {
+      q: params.q,
+      limit: params.limit
+    });
+  }
+  /** Resolves a share link to one of this account's own videos, for repurposing. */
+  lookupTikTokVideo(id, url) {
+    return this.http.post(`/v1/accounts/${id}/tiktok/video-download`, { url });
+  }
+  /** Tracks a Reel can carry; with no query Instagram answers with what is trending. */
+  searchInstagramAudio(id, params = {}) {
+    return this.http.get(`/v1/accounts/${id}/instagram/audio`, {
+      q: params.q,
+      audio_type: params.audioType
+    });
+  }
+  /** How many posts are left before Instagram refuses the next one. */
+  getInstagramPublishingLimit(id) {
+    return this.http.get(`/v1/accounts/${id}/instagram/publishing-limit`);
+  }
+  /** Stories still inside their 24 hours, posted through FoPost or not. */
+  listInstagramStories(id, params = {}) {
+    return this.http.get(`/v1/accounts/${id}/instagram/stories`, {
+      insights: params.insights
+    });
+  }
+  getInstagramStoryInsights(id, storyId) {
+    return this.http.get(
+      `/v1/accounts/${id}/instagram/stories/${storyId}/insights`
+    );
+  }
+  /** Organizations a LinkedIn post can mention. People are not searchable. */
+  searchLinkedInMentions(id, q) {
+    return this.http.get(`/v1/accounts/${id}/linkedin/mentions`, { q });
+  }
+};
+function discordEventBody(input) {
+  const body = {};
+  if (input.name !== void 0) body.name = input.name;
+  if (input.description !== void 0) body.description = input.description;
+  if (input.startTime !== void 0) body.start_time = input.startTime;
+  if (input.endTime !== void 0) body.end_time = input.endTime;
+  if (input.channelId !== void 0) body.channel_id = input.channelId;
+  if (input.location !== void 0) body.location = input.location;
+  if (input.status !== void 0) body.status = input.status;
+  return body;
+}
+var BlogsResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  /** A Shopify store reports every blog; WordPress reports one, id `default`. */
+  listBlogs(accountId) {
+    return this.http.get(`/v1/accounts/${accountId}/blogs`);
+  }
+  /** Newest first, drafts included, whoever wrote them. */
+  listArticles(accountId, blogId, params = {}) {
+    return this.http.get(`/v1/accounts/${accountId}/blogs/${blogId}/articles`, {
+      limit: params.limit,
+      status: params.status,
+      q: params.q
+    });
+  }
+  getArticle(accountId, blogId, articleId) {
+    return this.http.get(
+      `/v1/accounts/${accountId}/blogs/${blogId}/articles/${articleId}`
+    );
+  }
+  createArticle(accountId, blogId, input) {
+    return this.http.post(
+      `/v1/accounts/${accountId}/blogs/${blogId}/articles`,
+      articleBody(input)
+    );
+  }
+  /**
+   * Changes the live article in place. Only the fields you pass are touched,
+   * and the article is addressed by its own id, so this never creates a second
+   * post on the site.
+   */
+  updateArticle(accountId, blogId, articleId, input) {
+    return this.http.patch(
+      `/v1/accounts/${accountId}/blogs/${blogId}/articles/${articleId}`,
+      articleBody(input)
+    );
+  }
+  /** Removes the article from the site. This cannot be undone. */
+  deleteArticle(accountId, blogId, articleId) {
+    return this.http.delete(
+      `/v1/accounts/${accountId}/blogs/${blogId}/articles/${articleId}`
+    );
+  }
+  listProducts(accountId, params = {}) {
+    return this.http.get(`/v1/accounts/${accountId}/products`, {
+      limit: params.limit,
+      status: params.status,
+      q: params.q
+    });
+  }
+  /** Only the fields you pass change; the rest of the product stays as it is. */
+  updateProduct(accountId, productId, input) {
+    const body = {};
+    if (input.title !== void 0) body.title = input.title;
+    if (input.description !== void 0) body.description = input.description;
+    if (input.status !== void 0) body.status = input.status;
+    if (input.tags !== void 0) body.tags = input.tags;
+    if (input.productType !== void 0) body.product_type = input.productType;
+    if (input.vendor !== void 0) body.vendor = input.vendor;
+    return this.http.patch(`/v1/accounts/${accountId}/products/${productId}`, body);
+  }
+};
+function articleBody(input) {
+  const body = {};
+  if (input.title !== void 0) body.title = input.title;
+  if (input.body !== void 0) body.body = input.body;
+  if (input.excerpt !== void 0) body.excerpt = input.excerpt;
+  if (input.status !== void 0) body.status = input.status;
+  if (input.tags !== void 0) body.tags = input.tags;
+  if (input.authorName !== void 0) body.author_name = input.authorName;
+  if (input.imageUrl !== void 0) body.image_url = input.imageUrl;
+  return body;
+}
+var AccountGroupsResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  list(params = {}) {
+    return this.http.get("/v1/account-groups", {
       workspace_id: params.workspaceId
     });
   }
   get(id) {
-    return this.http.get(`/api/v1/accounts/${id}`);
+    return this.http.get(`/v1/account-groups/${id}`);
   }
-  health(id) {
-    return this.http.get(`/api/v1/accounts/${id}/health`);
+  create(input) {
+    return this.http.post("/v1/account-groups", {
+      workspace_id: input.workspaceId,
+      name: input.name,
+      account_ids: input.accountIds === void 0 ? void 0 : accountIds(input.accountIds)
+    });
+  }
+  update(id, input) {
+    return this.http.patch(`/v1/account-groups/${id}`, { name: input.name });
+  }
+  /** Deletes the group only; its accounts stay connected. */
+  delete(id) {
+    return this.http.delete(`/v1/account-groups/${id}`);
+  }
+  /** Replaces the group's members with exactly these accounts. */
+  setMembers(id, accounts) {
+    return this.http.put(`/v1/account-groups/${id}/members`, {
+      account_ids: accountIds(accounts)
+    });
   }
 };
 var WorkspacesResource = class {
@@ -31632,10 +32376,10 @@ var WorkspacesResource = class {
   }
   http;
   list() {
-    return this.http.get("/api/v1/workspaces");
+    return this.http.get("/v1/workspaces");
   }
   get(id) {
-    return this.http.get(`/api/v1/workspaces/${id}`);
+    return this.http.get(`/v1/workspaces/${id}`);
   }
 };
 var LabelsResource = class {
@@ -31644,7 +32388,7 @@ var LabelsResource = class {
   }
   http;
   list(params) {
-    return this.http.get("/api/v1/labels", { workspace_id: params.workspaceId });
+    return this.http.get("/v1/labels", { workspace_id: params.workspaceId });
   }
 };
 var AiResource = class {
@@ -31653,10 +32397,10 @@ var AiResource = class {
   }
   http;
   credits() {
-    return this.http.get("/api/v1/ai/credits");
+    return this.http.get("/v1/ai/credits");
   }
   generateCaption(input) {
-    return this.http.post("/api/v1/ai/generate-caption", {
+    return this.http.post("/v1/ai/generate-caption", {
       current_caption: input.currentCaption,
       image_urls: input.imageUrls,
       platforms: input.platforms,
@@ -31666,10 +32410,1971 @@ var AiResource = class {
     });
   }
   rewrite(input) {
-    return this.http.post("/api/v1/ai/rewrite", input);
+    return this.http.post("/v1/ai/rewrite", input);
   }
   repurposeUrl(input) {
-    return this.http.post("/api/v1/ai/repurpose-url", input);
+    return this.http.post("/v1/ai/repurpose-url", input);
+  }
+};
+var InboxResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  /** Comments, mentions and DMs, newest first. Paginated: the result carries `meta`. */
+  list(params = {}) {
+    return this.http.get("/v1/inbox", {
+      workspace_id: params.workspaceId,
+      type: params.type,
+      state: params.state,
+      platform: params.platform,
+      account_id: params.accountId,
+      post_id: params.postId,
+      post_external_id: params.postExternalId,
+      conversation_id: params.conversationId,
+      direction: params.direction,
+      q: params.q,
+      sort: params.sort,
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+  /** One row per platform post with comments, or per post we were mentioned in. */
+  threads(params = {}) {
+    return this.http.get("/v1/inbox/posts", {
+      workspace_id: params.workspaceId,
+      kind: params.kind,
+      platform: params.platform,
+      account_id: params.accountId,
+      state: params.state,
+      q: params.q,
+      sort: params.sort,
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+  /** One row per DM thread, latest first. */
+  conversations(params = {}) {
+    return this.http.get("/v1/inbox/conversations", {
+      workspace_id: params.workspaceId,
+      platform: params.platform,
+      account_id: params.accountId,
+      state: params.state,
+      q: params.q,
+      sort: params.sort,
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+  unreadCount(params = {}) {
+    return this.http.get("/v1/inbox/unread-count", {
+      workspace_id: params.workspaceId
+    });
+  }
+  accounts(params = {}) {
+    return this.http.get("/v1/inbox/accounts", {
+      workspace_id: params.workspaceId
+    });
+  }
+  platforms() {
+    return this.http.get("/v1/inbox/platforms");
+  }
+  markThreadRead(input) {
+    return this.http.post("/v1/inbox/read", {
+      workspace_id: input.workspaceId,
+      account_id: input.accountId,
+      post_external_id: input.postExternalId,
+      conversation_id: input.conversationId
+    });
+  }
+  /** Poll every inbox-capable account in the workspace now. */
+  refresh(workspaceId) {
+    return this.http.post("/v1/inbox/refresh", { workspace_id: workspaceId });
+  }
+  update(id, input) {
+    return this.http.request("PATCH", `/v1/inbox/${id}`, input);
+  }
+  /** Edits our own comment on the platform. Needs `publish`. */
+  editComment(id, text) {
+    return this.http.request("PATCH", `/v1/inbox/${id}`, { text });
+  }
+  /**
+   * Sends the reply on the platform as the connected account. `text` may be omitted when
+   * `mediaIds` is given; `mediaIds` and `quickReplies` need `publish`.
+   */
+  reply(id, text, options = {}) {
+    const body = {};
+    if (text !== void 0) body.text = text;
+    if (options.mediaIds !== void 0) body.media_ids = options.mediaIds;
+    if (options.quickReplies !== void 0) body.quick_replies = options.quickReplies;
+    return this.http.post(`/v1/inbox/${id}/reply`, body);
+  }
+  hide(id) {
+    return this.http.post(`/v1/inbox/${id}/hide`);
+  }
+  unhide(id) {
+    return this.http.post(`/v1/inbox/${id}/unhide`);
+  }
+  /** Deletes the comment on the platform, or our own reply (which needs `publish`). */
+  delete(id) {
+    return this.http.delete(`/v1/inbox/${id}`);
+  }
+  /** Likes, upvotes or favourites the item on the platform. Needs `publish`. */
+  like(id) {
+    return this.http.post(`/v1/inbox/${id}/like`);
+  }
+  unlike(id) {
+    return this.http.post(`/v1/inbox/${id}/unlike`);
+  }
+  /**
+   * Votes the item up or down where the network ranks by votes (Reddit), or
+   * takes an earlier vote back with `none`. An upvote is the same call a like
+   * makes, so `liked` moves with it. Needs `publish`.
+   */
+  vote(id, direction) {
+    return this.http.post(`/v1/inbox/${id}/vote`, { direction });
+  }
+  /** Pins our own comment. Needs `publish`. */
+  pin(id) {
+    return this.http.post(`/v1/inbox/${id}/pin`);
+  }
+  unpin(id) {
+    return this.http.post(`/v1/inbox/${id}/unpin`);
+  }
+  /** Reacts to a DM with an emoji; `null` removes ours. Needs `publish`. */
+  react(id, reaction) {
+    return this.http.post(`/v1/inbox/${id}/react`, { reaction });
+  }
+  /** Opens a DM by handle, or answers a comment privately. Needs `publish`. */
+  startConversation(input) {
+    const body = { text: input.text };
+    if (input.accountId !== void 0) body.account_id = input.accountId;
+    if (input.handle !== void 0) body.handle = input.handle;
+    if (input.commentId !== void 0) body.comment_id = input.commentId;
+    if (input.mediaIds !== void 0) body.media_ids = input.mediaIds;
+    return this.http.post("/v1/inbox/conversations", body);
+  }
+  /** Shows (`on`, the default) or clears the typing indicator in a DM thread. Needs `publish`. */
+  setTyping(conversationId, accountId, on) {
+    return this.http.post(`/v1/inbox/conversations/${conversationId}/typing`, {
+      account_id: accountId,
+      ...on === void 0 ? {} : { on }
+    });
+  }
+  /**
+   * Passes a Messenger thread to another Meta app, or takes it back when
+   * `appId` is omitted. Needs `publish`.
+   */
+  handover(conversationId, accountId, options = {}) {
+    return this.http.post(`/v1/inbox/conversations/${conversationId}/handover`, {
+      account_id: accountId,
+      ...options.appId === void 0 ? {} : { app_id: options.appId },
+      ...options.metadata === void 0 ? {} : { metadata: options.metadata }
+    });
+  }
+  /** Replies an automation or the agent drafted that a person still has to send. */
+  listApprovals(params = {}) {
+    return this.http.get("/v1/inbox/approvals", {
+      workspace_id: params.workspaceId
+    });
+  }
+  /** Sends the draft, or `text` in its place. */
+  approveReply(id, text) {
+    return this.http.post(`/v1/inbox/approvals/${id}/approve`, text === void 0 ? {} : { text });
+  }
+  rejectReply(id) {
+    return this.http.post(`/v1/inbox/approvals/${id}/reject`);
+  }
+};
+var KnowledgeResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  list(params = {}) {
+    return this.http.get("/v1/knowledge/sources", {
+      workspace_id: params.workspaceId
+    });
+  }
+  create(input) {
+    return this.http.post("/v1/knowledge/sources", {
+      kind: input.kind,
+      title: input.title,
+      content: input.content,
+      url: input.url,
+      media_id: input.mediaId,
+      brand_voice_id: input.brandVoiceId,
+      workspace_id: input.workspaceId
+    });
+  }
+  update(id, input) {
+    return this.http.patch(`/v1/knowledge/sources/${id}`, {
+      title: input.title,
+      content: input.content,
+      url: input.url,
+      brand_voice_id: input.brandVoiceId
+    });
+  }
+  delete(id) {
+    return this.http.delete(`/v1/knowledge/sources/${id}`);
+  }
+  /** Read the source again — a `url` source is re-fetched. Returns once queued. */
+  sync(id) {
+    return this.http.post(
+      `/v1/knowledge/sources/${id}/sync`,
+      {}
+    );
+  }
+  /** The passages closest to a question. Empty when nothing stored answers it. */
+  search(params) {
+    return this.http.get("/v1/knowledge/search", {
+      q: params.q,
+      top_k: params.topK,
+      brand_voice_id: params.brandVoiceId,
+      workspace_id: params.workspaceId
+    });
+  }
+};
+var AdsResource = class {
+  constructor(http) {
+    this.http = http;
+    this.google = new GoogleAdsResource(http);
+  }
+  http;
+  /** The Search surface no other network has: keywords, assets, conversions, GAQL. */
+  google;
+  /** Boosts and ads created through FoPost, with insights from their last refresh. */
+  list(params = {}) {
+    return this.http.get("/v1/ads", { workspace_id: params.workspaceId });
+  }
+  /** Ads on the connected ad accounts that were made elsewhere. Read live, never stored. */
+  external(params = {}) {
+    return this.http.get("/v1/ads/external", { workspace_id: params.workspaceId });
+  }
+  boostable(params = {}) {
+    return this.http.get("/v1/ads/boostable", {
+      workspace_id: params.workspaceId
+    });
+  }
+  connections(params = {}) {
+    return this.http.get("/v1/ads/connections", {
+      workspace_id: params.workspaceId
+    });
+  }
+  /** Each connection with the ad accounts and Pages its grant reaches. */
+  sources(params = {}) {
+    return this.http.get("/v1/ads/sources", { workspace_id: params.workspaceId });
+  }
+  /** The ad networks this deployment knows, with what each one supports. */
+  providers() {
+    return this.http.get("/v1/ads/providers");
+  }
+  /** Returns the network's login URL; the caller finishes it in their own browser. */
+  authorize(provider, input) {
+    return this.http.post(`/v1/ads/connections/${provider}/authorize`, input);
+  }
+  /** @deprecated Use `authorize('meta', input)`. */
+  authorizeMeta(input) {
+    return this.authorize("meta", input);
+  }
+  /** Returns the Google login URL to send the user to. */
+  authorizeGoogle(input) {
+    return this.http.post("/v1/ads/connections/google/authorize", input);
+  }
+  /** Also deletes every ad record created through the connection. */
+  deleteConnection(id, workspaceId) {
+    return this.http.request("DELETE", `/v1/ads/connections/${id}`, void 0, {
+      workspace_id: workspaceId
+    });
+  }
+  /** Needs the `publish` scope as well as `ads`. Starts paused unless `paused` is false. */
+  boost(input) {
+    return this.http.post("/v1/ads/boost", input);
+  }
+  /** Needs the `publish` scope as well as `ads`. Starts paused unless `paused` is false. */
+  create(input) {
+    return this.http.post("/v1/ads", input);
+  }
+  /** Reads the delivery status and lifetime insights from Meta. */
+  refresh(id, workspaceId) {
+    return this.http.request("POST", `/v1/ads/${id}/refresh`, void 0, {
+      workspace_id: workspaceId
+    });
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  setStatus(id, workspaceId, status) {
+    return this.http.request(
+      "PATCH",
+      `/v1/ads/${id}`,
+      { status },
+      { workspace_id: workspaceId }
+    );
+  }
+  /** Ends delivery and deletes the ad on Meta. Needs the `publish` scope as well as `ads`. */
+  delete(id, workspaceId) {
+    return this.http.request("DELETE", `/v1/ads/${id}`, void 0, { workspace_id: workspaceId });
+  }
+  audiences(params) {
+    return this.http.get("/v1/ads/audiences", {
+      workspace_id: params.workspaceId,
+      connection_id: params.connectionId,
+      ad_account_id: params.adAccountId
+    });
+  }
+  createAudience(input) {
+    return this.http.post("/v1/ads/audiences", input);
+  }
+  /** Locations and facets as the network names them; `providers()` says which it takes. */
+  searchTargeting(params) {
+    return this.http.get("/v1/ads/targeting/search", {
+      workspace_id: params.workspaceId,
+      connection_id: params.connectionId,
+      type: params.type,
+      q: params.q
+    });
+  }
+  leadForms(params = {}) {
+    return this.http.get("/v1/ads/lead-forms", {
+      workspace_id: params.workspaceId
+    });
+  }
+  createLeadForm(input) {
+    return this.http.post("/v1/ads/lead-forms", input);
+  }
+  /** One page of leads; pass `nextCursor` back as `after` for the next. */
+  leads(formId, params) {
+    return this.http.get(`/v1/ads/lead-forms/${formId}/leads`, {
+      workspace_id: params.workspaceId,
+      connection_id: params.connectionId,
+      page_id: params.pageId,
+      after: params.after
+    });
+  }
+  /**
+   * TikTok's Business Centers. The only network-named reads in this resource,
+   * because no other network groups ad accounts this way.
+   */
+  tiktokBusinessCenters(params) {
+    return this.http.get("/v1/ads/tiktok/business-centers", metaQuery(params));
+  }
+  /** The TikTok identities an ad can run as; an identity id is a `pageId`. */
+  tiktokIdentities(params) {
+    return this.http.get("/v1/ads/tiktok/identities", {
+      ...metaQuery(params),
+      ad_account_id: params.adAccountId
+    });
+  }
+  /** Posts already live under an identity, each a candidate Spark ad. */
+  sparkPosts(params) {
+    return this.http.get("/v1/ads/spark-posts", {
+      ...metaQuery(params),
+      ad_account_id: params.adAccountId,
+      identity_id: params.identityId
+    });
+  }
+  /** Offline conversions. Emails and phone numbers are hashed before they leave FoPost. */
+  uploadConversions(input) {
+    return this.http.post("/v1/ads/conversions", input);
+  }
+  /** Comments on an ad, read live. Pass `nextCursor` back as `after`. */
+  comments(params) {
+    return this.http.get("/v1/ads/comments", {
+      ...metaQuery(params),
+      ad_id: params.adId,
+      after: params.after
+    });
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  replyToComment(commentId, input) {
+    return this.http.post(`/v1/ads/comments/${commentId}/reply`, input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  setCommentHidden(commentId, input) {
+    return this.http.post(`/v1/ads/comments/${commentId}/hide`, input);
+  }
+  /**
+   * One already gone on the network succeeds. Needs the `publish` scope as
+   * well as `ads`.
+   */
+  deleteComment(commentId, input) {
+    return this.http.request("DELETE", `/v1/ads/comments/${commentId}`, input);
+  }
+  /** Campaigns, ad sets and ads on one ad account, read live from Meta. */
+  accountTree(adAccountId, params) {
+    return this.http.get(`/v1/ads/accounts/${adAccountId}/tree`, metaQuery(params));
+  }
+  /** Needs the `publish` scope as well as `ads`. Starts paused unless `paused` is false. */
+  createCampaign(input) {
+    return this.http.post("/v1/ads/campaigns", input);
+  }
+  getCampaign(id, params) {
+    return this.http.get(`/v1/ads/campaigns/${id}`, metaQuery(params));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  updateCampaign(id, params, input) {
+    return this.http.request(
+      "PATCH",
+      `/v1/ads/campaigns/${id}`,
+      input,
+      metaQuery(params)
+    );
+  }
+  /** Deletes it and everything beneath it on Meta. Needs the `publish` scope as well as `ads`. */
+  deleteCampaign(id, params) {
+    return this.http.request("DELETE", `/v1/ads/campaigns/${id}`, void 0, metaQuery(params));
+  }
+  /** Copies it with everything beneath it, paused unless `paused` is false. Needs `publish`. */
+  duplicateCampaign(id, params, options = {}) {
+    return this.http.request(
+      "POST",
+      `/v1/ads/campaigns/${id}/duplicate`,
+      options,
+      metaQuery(params)
+    );
+  }
+  /** Needs the `publish` scope as well as `ads`. Starts paused unless `paused` is false. */
+  createAdSet(input) {
+    return this.http.post("/v1/ads/ad-sets", input);
+  }
+  getAdSet(id, params) {
+    return this.http.get(`/v1/ads/ad-sets/${id}`, metaQuery(params));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  updateAdSet(id, params, input) {
+    return this.http.request("PATCH", `/v1/ads/ad-sets/${id}`, input, metaQuery(params));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  deleteAdSet(id, params) {
+    return this.http.request("DELETE", `/v1/ads/ad-sets/${id}`, void 0, metaQuery(params));
+  }
+  /** Copies it with its ads, paused unless `paused` is false. Needs `publish`. */
+  duplicateAdSet(id, params, options = {}) {
+    return this.http.request("POST", `/v1/ads/ad-sets/${id}/duplicate`, options, metaQuery(params));
+  }
+  /** An ad inside an ad set. Needs `publish` as well as `ads`. Starts paused unless `paused` is false. */
+  createNetworkAd(input) {
+    return this.http.post("/v1/ads/ads", input);
+  }
+  getNetworkAd(id, params) {
+    return this.http.get(`/v1/ads/ads/${id}`, metaQuery(params));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  updateNetworkAd(id, params, input) {
+    return this.http.request("PATCH", `/v1/ads/ads/${id}`, input, metaQuery(params));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  deleteNetworkAd(id, params) {
+    return this.http.request("DELETE", `/v1/ads/ads/${id}`, void 0, metaQuery(params));
+  }
+  /** Paused unless `paused` is false. Needs the `publish` scope as well as `ads`. */
+  duplicateNetworkAd(id, params, options = {}) {
+    return this.http.request("POST", `/v1/ads/ads/${id}/duplicate`, options, metaQuery(params));
+  }
+  /** Pauses or resumes up to 50 objects; each reports its own outcome. Needs `publish`. */
+  bulkSetStatus(input) {
+    return this.http.post("/v1/ads/status", input);
+  }
+  creatives(params) {
+    return this.http.get("/v1/ads/creatives", {
+      ...metaQuery(params),
+      ad_account_id: params.adAccountId
+    });
+  }
+  /** Nothing runs until an ad uses it. */
+  createCreative(input) {
+    return this.http.post("/v1/ads/creatives", input);
+  }
+  getCreative(id, params) {
+    return this.http.get(`/v1/ads/creatives/${id}`, metaQuery(params));
+  }
+  deleteCreative(id, params) {
+    return this.http.request("DELETE", `/v1/ads/creatives/${id}`, void 0, metaQuery(params));
+  }
+  getAudience(id, params) {
+    return this.http.get(`/v1/ads/audiences/${id}`, metaQuery(params));
+  }
+  updateAudience(id, params, input) {
+    return this.http.request(
+      "PATCH",
+      `/v1/ads/audiences/${id}`,
+      input,
+      metaQuery(params)
+    );
+  }
+  deleteAudience(id, params) {
+    return this.http.request("DELETE", `/v1/ads/audiences/${id}`, void 0, metaQuery(params));
+  }
+  /** Emails are hashed before they leave the API. */
+  addAudienceUsers(id, params, emails) {
+    return this.http.request(
+      "POST",
+      `/v1/ads/audiences/${id}/users`,
+      { emails },
+      metaQuery(params)
+    );
+  }
+  estimateReach(input) {
+    return this.http.post("/v1/ads/reach-estimate", input);
+  }
+  /** Insights for any Meta campaign, ad set or ad on a connection. */
+  insights(params) {
+    return this.http.get("/v1/ads/insights", {
+      ...metaQuery(params),
+      object_id: params.objectId,
+      ...insightsRange(params)
+    });
+  }
+  /** Insights for an ad created through FoPost, by its uuid. */
+  adInsights(id, params) {
+    return this.http.get(`/v1/ads/${id}/insights`, {
+      workspace_id: params.workspaceId,
+      ...insightsRange(params)
+    });
+  }
+  getLeadForm(formId, params) {
+    return this.http.get(`/v1/ads/lead-forms/${formId}`, {
+      ...metaQuery(params),
+      page_id: params.pageId
+    });
+  }
+  archiveLeadForm(formId, input) {
+    return this.http.post(`/v1/ads/lead-forms/${formId}/archive`, input);
+  }
+  /** Leads stored from subscribed Pages; pass `nextCursor` back as `cursor` for the next page. */
+  leadsFeed(params = {}) {
+    return this.http.get("/v1/ads/leads", {
+      workspace_id: params.workspaceId,
+      form_id: params.formId,
+      page_id: params.pageId,
+      cursor: params.cursor,
+      limit: params.limit
+    });
+  }
+  leadPages(params = {}) {
+    return this.http.get("/v1/ads/lead-pages", { workspace_id: params.workspaceId });
+  }
+  /** Turns on new-lead notifications for the Page and backfills its recent leads. */
+  subscribeLeadPage(input) {
+    return this.http.post("/v1/ads/lead-pages", input);
+  }
+  /**
+   * Adds companies to a company-list audience. The rows travel with the
+   * request and are never stored.
+   */
+  addAudienceCompanies(id, params, companies) {
+    return this.http.request(
+      "POST",
+      `/v1/ads/audiences/${id}/companies`,
+      { companies },
+      metaQuery(params)
+    );
+  }
+  /** What the auction currently costs for that audience. */
+  bidPricing(input) {
+    return this.http.post("/v1/ads/linkedin/bid-pricing", input);
+  }
+  /** What that audience would deliver at that budget. */
+  supplyForecast(input) {
+    return this.http.post("/v1/ads/linkedin/supply-forecast", input);
+  }
+  conversionRules(params) {
+    return this.http.get("/v1/ads/linkedin/conversion-rules", {
+      ...metaQuery(params),
+      ad_account_id: params.adAccountId
+    });
+  }
+  createConversionRule(input) {
+    return this.http.post("/v1/ads/linkedin/conversion-rules", input);
+  }
+  getConversionRule(id, params) {
+    return this.http.get(
+      `/v1/ads/linkedin/conversion-rules/${id}`,
+      metaQuery(params)
+    );
+  }
+  updateConversionRule(id, params, input) {
+    return this.http.request(
+      "PATCH",
+      `/v1/ads/linkedin/conversion-rules/${id}`,
+      input,
+      metaQuery(params)
+    );
+  }
+  /** Turns the rule off; the network keeps the history. */
+  deleteConversionRule(id, params) {
+    return this.http.request(
+      "DELETE",
+      `/v1/ads/linkedin/conversion-rules/${id}`,
+      void 0,
+      metaQuery(params)
+    );
+  }
+  attachConversionRule(id, params, campaignId) {
+    return this.http.request(
+      "POST",
+      `/v1/ads/linkedin/conversion-rules/${id}/associations`,
+      { campaignId },
+      metaQuery(params)
+    );
+  }
+  detachConversionRule(id, params, campaignId) {
+    return this.http.request(
+      "DELETE",
+      `/v1/ads/linkedin/conversion-rules/${id}/associations`,
+      { campaignId },
+      metaQuery(params)
+    );
+  }
+  conversionMetrics(id, params) {
+    return this.http.get(`/v1/ads/linkedin/conversion-rules/${id}/metrics`, {
+      ...metaQuery(params),
+      since: params.since,
+      until: params.until
+    });
+  }
+  /**
+   * Sends conversions back to the network. The address on each event is hashed
+   * inside the API and nothing about an event is stored.
+   */
+  sendConversionEvents(id, params, events) {
+    return this.http.request(
+      "POST",
+      `/v1/ads/linkedin/conversion-rules/${id}/events`,
+      { events },
+      metaQuery(params)
+    );
+  }
+  unsubscribeLeadPage(pageId, params) {
+    return this.http.request(
+      "DELETE",
+      `/v1/ads/lead-pages/${pageId}`,
+      void 0,
+      metaQuery(params)
+    );
+  }
+  // ─── Goals ──────────────────────────────────────────────────────
+  /**
+   * The goals this connection's network can run right now. Ask rather than
+   * assume: a goal the deployment is not set up for is absent here and is
+   * refused if you send it anyway.
+   */
+  goals(params) {
+    return this.http.get("/v1/ads/goals", metaQuery(params));
+  }
+  // ─── Product catalogs ───────────────────────────────────────────
+  /** Catalogs the connection's business portfolios reach. Read live, never stored. */
+  catalogs(params) {
+    return this.http.get("/v1/ads/catalogs", metaQuery(params));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  createCatalog(input) {
+    return this.http.post("/v1/ads/catalogs", input);
+  }
+  getCatalog(id, params) {
+    return this.http.get(`/v1/ads/catalogs/${id}`, metaQuery(params));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  updateCatalog(id, params, input) {
+    return this.http.request(
+      "PATCH",
+      `/v1/ads/catalogs/${id}`,
+      { ...input, ...params },
+      metaQuery(params)
+    );
+  }
+  /** Deletes every product, feed and set in it. Needs `publish` as well as `ads`. */
+  deleteCatalog(id, params) {
+    return this.http.request("DELETE", `/v1/ads/catalogs/${id}`, void 0, metaQuery(params));
+  }
+  /** One page of products; pass `nextCursor` back as `after`. */
+  catalogProducts(id, params) {
+    return this.http.get(`/v1/ads/catalogs/${id}/products`, {
+      ...metaQuery(params),
+      after: params.after
+    });
+  }
+  /** Up to 500 upserts and deletes in one batch. Needs `publish` as well as `ads`. */
+  writeCatalogProducts(id, params, products) {
+    return this.http.post(`/v1/ads/catalogs/${id}/products`, {
+      ...params,
+      products
+    });
+  }
+  productFeeds(id, params) {
+    return this.http.get(`/v1/ads/catalogs/${id}/feeds`, metaQuery(params));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  createProductFeed(id, input) {
+    return this.http.post(`/v1/ads/catalogs/${id}/feeds`, input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  deleteProductFeed(id, feedId, params) {
+    return this.http.request(
+      "DELETE",
+      `/v1/ads/catalogs/${id}/feeds/${feedId}`,
+      void 0,
+      metaQuery(params)
+    );
+  }
+  /** Each run the network made of the feed. */
+  feedUploads(id, feedId, params) {
+    return this.http.get(
+      `/v1/ads/catalogs/${id}/feeds/${feedId}/uploads`,
+      metaQuery(params)
+    );
+  }
+  /** Fetches the feed now. Needs the `publish` scope as well as `ads`. */
+  startFeedUpload(id, feedId, params) {
+    return this.http.post(`/v1/ads/catalogs/${id}/feeds/${feedId}/uploads`, params);
+  }
+  /** A catalog ad runs from a product set, not the whole catalog. */
+  productSets(id, params) {
+    return this.http.get(`/v1/ads/catalogs/${id}/product-sets`, metaQuery(params));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  createProductSet(id, input) {
+    return this.http.post(`/v1/ads/catalogs/${id}/product-sets`, input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  updateProductSet(id, setId, input) {
+    return this.http.request(
+      "PATCH",
+      `/v1/ads/catalogs/${id}/product-sets/${setId}`,
+      input,
+      metaQuery(input)
+    );
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  deleteProductSet(id, setId, params) {
+    return this.http.request(
+      "DELETE",
+      `/v1/ads/catalogs/${id}/product-sets/${setId}`,
+      void 0,
+      metaQuery(params)
+    );
+  }
+  // ─── Reach and frequency ────────────────────────────────────────
+  reachFrequency(params) {
+    return this.http.get("/v1/ads/reach-frequency", {
+      ...metaQuery(params),
+      ad_account_id: params.adAccountId
+    });
+  }
+  /** Prices a flight. Nothing is bought until you reserve it. */
+  createReachFrequency(input) {
+    return this.http.post("/v1/ads/reach-frequency", input);
+  }
+  getReachFrequency(id, params) {
+    return this.http.get(`/v1/ads/reach-frequency/${id}`, {
+      ...metaQuery(params),
+      ad_account_id: params.adAccountId
+    });
+  }
+  /** Holds the inventory the prediction priced. Needs `publish` as well as `ads`. */
+  reserveReachFrequency(id, input) {
+    return this.http.post(`/v1/ads/reach-frequency/${id}/reserve`, input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  cancelReachFrequency(id, input) {
+    return this.http.post(`/v1/ads/reach-frequency/${id}/cancel`, input);
+  }
+  // ─── Ad Library ─────────────────────────────────────────────────
+  /**
+   * The public ad archive: ads anyone is running, by keyword or by Page.
+   * Read live on every call and stored nowhere, so an ad that stops running
+   * is simply absent from the next search.
+   */
+  adLibrary(params) {
+    return this.http.get("/v1/ads/library", {
+      ...metaQuery(params),
+      countries: params.countries.join(","),
+      q: params.q,
+      page_ids: params.pageIds?.join(","),
+      active_status: params.activeStatus,
+      limit: params.limit,
+      after: params.after
+    });
+  }
+  // ─── Partnership ads ────────────────────────────────────────────
+  /** Creators who allowlisted this Page to run partnership ads on their posts. */
+  partnershipCreators(params) {
+    return this.http.get("/v1/ads/partnership/creators", {
+      ...metaQuery(params),
+      page_id: params.pageId
+    });
+  }
+  requestPartnership(input) {
+    return this.http.post("/v1/ads/partnership/creators", input);
+  }
+  revokePartnership(creatorId, params) {
+    return this.http.request("DELETE", `/v1/ads/partnership/creators/${creatorId}`, void 0, {
+      ...metaQuery(params),
+      page_id: params.pageId
+    });
+  }
+  // ─── Ad account settings ────────────────────────────────────────
+  /** Who changed what on the ad account, and when. */
+  accountActivity(params) {
+    return this.http.get("/v1/ads/account/activity", {
+      ...accountQuery(params),
+      since: params.since,
+      until: params.until
+    });
+  }
+  labels(params) {
+    return this.http.get("/v1/ads/account/labels", accountQuery(params));
+  }
+  createLabel(input) {
+    return this.http.post("/v1/ads/account/labels", input);
+  }
+  updateLabel(id, input) {
+    return this.http.request(
+      "PATCH",
+      `/v1/ads/account/labels/${id}`,
+      input,
+      metaQuery(input)
+    );
+  }
+  deleteLabel(id, params) {
+    return this.http.request(
+      "DELETE",
+      `/v1/ads/account/labels/${id}`,
+      void 0,
+      accountQuery(params)
+    );
+  }
+  /** Keeps whatever labels the object already carries. */
+  applyLabel(id, input) {
+    return this.http.post(`/v1/ads/account/labels/${id}/apply`, input);
+  }
+  studies(params) {
+    return this.http.get("/v1/ads/account/studies", accountQuery(params));
+  }
+  /** Splits traffic evenly across the cells for the length of the flight. */
+  createStudy(input) {
+    return this.http.post("/v1/ads/account/studies", input);
+  }
+  getStudy(id, params) {
+    return this.http.get(`/v1/ads/account/studies/${id}`, accountQuery(params));
+  }
+  deleteStudy(id, params) {
+    return this.http.request(
+      "DELETE",
+      `/v1/ads/account/studies/${id}`,
+      void 0,
+      accountQuery(params)
+    );
+  }
+  /** How many iOS 14 campaigns the account may run at once, per app. */
+  iosCampaignLimits(params) {
+    return this.http.get("/v1/ads/account/ios-limits", accountQuery(params));
+  }
+  highDemandPeriods(params) {
+    return this.http.get(
+      "/v1/ads/account/high-demand-periods",
+      accountQuery(params)
+    );
+  }
+  /** Tells the network to expect heavier spend over a window, so pacing allows for it. */
+  createHighDemandPeriod(input) {
+    return this.http.post("/v1/ads/account/high-demand-periods", input);
+  }
+  deleteHighDemandPeriod(id, params) {
+    return this.http.request(
+      "DELETE",
+      `/v1/ads/account/high-demand-periods/${id}`,
+      void 0,
+      accountQuery(params)
+    );
+  }
+  valueRuleSets(params) {
+    return this.http.get("/v1/ads/account/value-rule-sets", accountQuery(params));
+  }
+  /** Weights conversions so some audiences count for more than others. */
+  createValueRuleSet(input) {
+    return this.http.post("/v1/ads/account/value-rule-sets", input);
+  }
+  deleteValueRuleSet(id, params) {
+    return this.http.request(
+      "DELETE",
+      `/v1/ads/account/value-rule-sets/${id}`,
+      void 0,
+      accountQuery(params)
+    );
+  }
+};
+function accountQuery(params) {
+  return { ...metaQuery(params), ad_account_id: params.adAccountId };
+}
+var GoogleAdsResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  /** Keywords on the account, or on one ad group. */
+  keywords(scope, params = {}) {
+    return this.http.get("/v1/ads/google/keywords", {
+      ...googleQuery(scope),
+      ad_group_id: params.adGroupId
+    });
+  }
+  /** Needs the `publish` scope as well as `ads`: the keyword goes live. */
+  createKeyword(input) {
+    return this.http.post("/v1/ads/google/keywords", input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  updateKeyword(id, input) {
+    return this.http.request("PATCH", `/v1/ads/google/keywords/${id}`, input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  deleteKeyword(id, scope) {
+    return this.http.request("DELETE", `/v1/ads/google/keywords/${id}`, scope);
+  }
+  /** Ideas from seed keywords, a landing page, or both. */
+  keywordIdeas(input) {
+    return this.http.post("/v1/ads/google/keyword-ideas", input);
+  }
+  keywordMetrics(input) {
+    return this.http.post("/v1/ads/google/keyword-metrics", input);
+  }
+  /** What people actually searched, with the metrics each term earned. */
+  searchTerms(scope, range) {
+    return this.http.get("/v1/ads/google/search-terms", {
+      ...googleQuery(scope),
+      ...range
+    });
+  }
+  bidStrategies(scope) {
+    return this.http.get("/v1/ads/google/bid-strategies", googleQuery(scope));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  createBidStrategy(input) {
+    return this.http.post("/v1/ads/google/bid-strategies", input);
+  }
+  adSchedule(scope, campaignId) {
+    return this.http.get("/v1/ads/google/ad-schedule", {
+      ...googleQuery(scope),
+      campaign_id: campaignId
+    });
+  }
+  /** Replaces every slot on the campaign. Needs the `publish` scope as well as `ads`. */
+  setAdSchedule(input) {
+    return this.http.request("PUT", "/v1/ads/google/ad-schedule", input);
+  }
+  negativeKeywordLists(scope) {
+    return this.http.get("/v1/ads/google/negative-keywords", googleQuery(scope));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  createNegativeKeywordList(input) {
+    return this.http.post("/v1/ads/google/negative-keywords", input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  addNegativeKeywords(input) {
+    return this.http.post("/v1/ads/google/negative-keywords/keywords", input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  attachNegativeKeywordList(input) {
+    return this.http.post("/v1/ads/google/negative-keywords/attach", input);
+  }
+  /** Sitelinks, callouts and snippets, with the links that put each one under an ad. */
+  assets(scope) {
+    return this.http.get("/v1/ads/google/assets", googleQuery(scope));
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  createAsset(input) {
+    return this.http.post("/v1/ads/google/assets", input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  attachAsset(input) {
+    return this.http.post("/v1/ads/google/assets/attach", input);
+  }
+  /**
+   * Removes the links that put the asset under an ad; the asset itself is
+   * permanent on Google. Needs the `publish` scope as well as `ads`.
+   */
+  deleteAsset(id, scope) {
+    return this.http.request("DELETE", `/v1/ads/google/assets/${id}`, scope);
+  }
+  assetGroups(scope, params = {}) {
+    return this.http.get("/v1/ads/google/asset-groups", {
+      ...googleQuery(scope),
+      campaign_id: params.campaignId
+    });
+  }
+  /** Needs the `publish` scope as well as `ads`. Starts paused unless `status` says otherwise. */
+  createAssetGroup(input) {
+    return this.http.post("/v1/ads/google/asset-groups", input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  updateAssetGroup(id, input) {
+    return this.http.request("PATCH", `/v1/ads/google/asset-groups/${id}`, input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  deleteAssetGroup(id, scope) {
+    return this.http.request("DELETE", `/v1/ads/google/asset-groups/${id}`, scope);
+  }
+  /** Leads from Local Services Ads, read live and never stored. */
+  localServicesLeads(scope, range) {
+    return this.http.get("/v1/ads/google/local-services", {
+      ...googleQuery(scope),
+      ...range
+    });
+  }
+  conversionActions(scope) {
+    return this.http.get(
+      "/v1/ads/google/conversions",
+      googleQuery(scope)
+    );
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  createConversionAction(input) {
+    return this.http.post("/v1/ads/google/conversions", input);
+  }
+  /** Offline conversions, matched to a click. Needs the `publish` scope as well as `ads`. */
+  uploadConversions(input) {
+    return this.http.post("/v1/ads/google/conversions/upload", input);
+  }
+  /** Needs the `publish` scope as well as `ads`. */
+  uploadConversionAdjustments(input) {
+    return this.http.post("/v1/ads/google/conversions/adjustments", input);
+  }
+  /**
+   * Google's own read on what the account should change next. `types` narrows
+   * to the recommendation types you care about.
+   */
+  recommendations(scope, types) {
+    return this.http.get("/v1/ads/google/recommendations", {
+      ...googleQuery(scope),
+      ...types?.length ? { types: types.join(",") } : {}
+    });
+  }
+  optimizationScore(scope) {
+    return this.http.get(
+      "/v1/ads/google/optimization-score",
+      googleQuery(scope)
+    );
+  }
+  /**
+   * Applies each recommendation, which changes what the live account serves or
+   * bids. Needs the `publish` scope as well as `ads`.
+   */
+  applyRecommendations(input) {
+    return this.http.post("/v1/ads/google/recommendations/apply", input);
+  }
+  /** Hides each recommendation. Needs the `publish` scope as well as `ads`. */
+  dismissRecommendations(input) {
+    return this.http.post("/v1/ads/google/recommendations/dismiss", input);
+  }
+  /** A raw read-only GAQL SELECT. Rows come back exactly as Google returns them. */
+  query(input) {
+    return this.http.post("/v1/ads/insights/query", input);
+  }
+};
+function googleQuery(scope) {
+  return {
+    workspace_id: scope.workspaceId,
+    connection_id: scope.connectionId,
+    customer_id: scope.customerId
+  };
+}
+function metaQuery(params) {
+  return { workspace_id: params.workspaceId, connection_id: params.connectionId };
+}
+function insightsRange(params) {
+  return {
+    since: params.since,
+    until: params.until,
+    breakdown: params.breakdown,
+    daily: params.daily
+  };
+}
+var ValidateResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  /** The preflight checks, for content that has not been saved as a post. */
+  post(input) {
+    return this.http.post("/v1/validate/post", {
+      content: input.content,
+      media: input.media?.map((m) => ({ url: m.url, mime_type: m.mimeType, size: m.size })),
+      platforms: input.platforms
+    });
+  }
+  length(input) {
+    return this.http.post("/v1/validate/length", input);
+  }
+  /** Fetches the file and runs the upload checks on it; nothing is stored. */
+  media(input) {
+    return this.http.post("/v1/validate/media", input);
+  }
+  /**
+   * Whether a subreddit exists and takes a post from this account. The check
+   * runs with the account's own token, so `accountId` is required.
+   */
+  subreddit(input) {
+    return this.http.get("/v1/validate/subreddit", {
+      account_id: input.accountId,
+      name: input.name
+    });
+  }
+};
+var AnalyticsResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  scope(params = {}) {
+    return { workspace_id: params.workspaceId, accountId: params.accountId };
+  }
+  /** How engagement accumulates with a post's age, and where the half-life falls. */
+  decay(params = {}) {
+    return this.http.get("/v1/analytics/decay", {
+      ...this.scope(params),
+      days: params.days
+    });
+  }
+  /** Weekly posting cadence set against what each cadence earned per post. */
+  frequency(params = {}) {
+    return this.http.get("/v1/analytics/frequency", {
+      ...this.scope(params),
+      days: params.days
+    });
+  }
+  /**
+   * Every reading held for one post, oldest first, one timeline per delivery.
+   * `idOrPermalink` is a FoPost post id or the permalink of a post made
+   * natively on the network.
+   */
+  timeline(idOrPermalink) {
+    return this.http.get(
+      `/v1/analytics/posts/${encodeURIComponent(idOrPermalink)}/timeline`
+    );
+  }
+  /**
+   * Readings recorded after `since`, oldest first, with a cursor to continue.
+   * Poll this to mirror our metrics without refetching the whole history.
+   */
+  changes(params = {}) {
+    return this.http.get("/v1/analytics/changes", {
+      ...this.scope(params),
+      since: params.since,
+      limit: params.limit
+    });
+  }
+  /**
+   * Re-read one post from the network now. Spends the same per-user budget as
+   * a full collection run, so a burst answers 429 with `retryAfter`.
+   */
+  collectPost(idOrPermalink) {
+    return this.http.post(
+      `/v1/posts/${encodeURIComponent(idOrPermalink)}/analytics/collect`
+    );
+  }
+  /** Posts on the account that never went out through FoPost, newest first. */
+  nativePosts(accountId, params = {}) {
+    return this.http.get(`/v1/accounts/${accountId}/native-posts`, {
+      page: params.page,
+      per_page: params.perPage,
+      days: params.days
+    });
+  }
+};
+var MediaResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  /** The per-file ceiling for this account, what set it, and the multipart ceiling. */
+  limits(workspaceId) {
+    return this.http.get("/v1/media/limits", { workspaceId });
+  }
+  presign(input) {
+    return this.http.post("/v1/media/presign", input);
+  }
+  complete(uploadId) {
+    return this.http.post(`/v1/media/presign/${uploadId}/complete`);
+  }
+  /** Presign, PUT the bytes to storage, then complete. */
+  async uploadDirect(input) {
+    const size = input.data instanceof Blob ? input.data.size : input.data.byteLength;
+    const { data: _data, ...rest } = input;
+    const presigned = await this.presign({ ...rest, size });
+    const res = await this.http.fetchImpl(presigned.uploadUrl, {
+      method: presigned.method,
+      headers: { ...presigned.headers, "Content-Length": String(size) },
+      body: input.data
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new FoPostError(text || `Upload failed: HTTP ${res.status}`, res.status);
+    }
+    return this.complete(presigned.uploadId);
+  }
+};
+var ContactsResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  /** Most recently active first. Paginated: the result carries `pagination`. */
+  list(params = {}) {
+    return this.http.get("/v1/contacts", {
+      workspace_id: params.workspaceId,
+      search: params.search,
+      platform: params.platform,
+      source: params.source,
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+  get(id) {
+    return this.http.get(`/v1/contacts/${id}`);
+  }
+  /**
+   * Folds into the contact that already holds the first channel, so this
+   * cannot duplicate someone the inbox has already met.
+   */
+  create(input) {
+    return this.http.post("/v1/contacts", {
+      workspace_id: input.workspaceId,
+      channels: input.channels,
+      display_name: input.displayName,
+      note: input.note,
+      fields: input.fields
+    });
+  }
+  update(id, input) {
+    return this.http.request("PATCH", `/v1/contacts/${id}`, {
+      display_name: input.displayName,
+      channels: input.channels,
+      note: input.note,
+      fields: input.fields
+    });
+  }
+  /** The messages stay in the inbox; a later one files them again. */
+  delete(id) {
+    return this.http.delete(`/v1/contacts/${id}`);
+  }
+  /** The threads this person appears in, newest first. */
+  conversations(id, params = {}) {
+    return this.http.get(`/v1/contacts/${id}/conversations`, {
+      limit: params.limit
+    });
+  }
+  /**
+   * Import from CSV text. `platform` and `handle` are required columns; any
+   * other column is read as a custom field key and reported when unknown.
+   */
+  import(workspaceId, csv) {
+    return this.http.post("/v1/contacts/import", {
+      workspace_id: workspaceId,
+      csv
+    });
+  }
+  /** The columns this workspace keeps about its contacts, in display order. */
+  listFields(workspaceId) {
+    return this.http.get("/v1/contacts/fields", {
+      workspace_id: workspaceId
+    });
+  }
+  createField(workspaceId, input) {
+    return this.http.post(
+      `/v1/contacts/fields?workspace_id=${encodeURIComponent(workspaceId)}`,
+      input
+    );
+  }
+  /** The key and the type are fixed once created; the name and options are not. */
+  updateField(id, input) {
+    return this.http.request("PATCH", `/v1/contacts/fields/${id}`, input);
+  }
+  /** Removes the field and every answer to it. */
+  deleteField(id) {
+    return this.http.delete(`/v1/contacts/fields/${id}`);
+  }
+  /**
+   * Inbox analytics per thread: what each one carried and how long it waited
+   * for a reply. Needs the `analytics` scope, not `inbox`.
+   */
+  conversationAnalytics(params = {}) {
+    return this.http.get("/v1/analytics/inbox/conversations", {
+      workspace_id: params.workspaceId,
+      accountId: params.accountId,
+      days: params.days,
+      sort: params.sort,
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+};
+var BroadcastsResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  /** Newest first. Paginated: the result carries `pagination`. */
+  list(params = {}) {
+    return this.http.get("/v1/broadcasts", {
+      workspace_id: params.workspaceId,
+      status: params.status,
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+  get(id) {
+    return this.http.get(`/v1/broadcasts/${id}`);
+  }
+  /** Creates it without sending. Give `scheduledAt` to have it go out on its own. */
+  create(input) {
+    return this.http.post("/v1/broadcasts", {
+      workspace_id: input.workspaceId,
+      account_id: input.accountId,
+      name: input.name,
+      text: input.text,
+      media_id: input.mediaId,
+      audience: input.audience,
+      scheduled_at: input.scheduledAt
+    });
+  }
+  /** Only a draft or scheduled broadcast can be edited. */
+  update(id, input) {
+    return this.http.patch(`/v1/broadcasts/${id}`, {
+      name: input.name,
+      text: input.text,
+      media_id: input.mediaId,
+      audience: input.audience,
+      scheduled_at: input.scheduledAt
+    });
+  }
+  /**
+   * Freeze the audience into a recipient list and start sending. `recipients`
+   * is how many contacts matched, not how many will be messaged — the
+   * messaging window decides that. Needs the `publish` scope as well as
+   * `inbox`.
+   */
+  send(id) {
+    return this.http.post(
+      `/v1/broadcasts/${id}/send`,
+      {}
+    );
+  }
+  /**
+   * Stop it where it stands. Anyone not yet written to stays unsent; messages
+   * already delivered are not recalled. Needs the `publish` scope.
+   */
+  cancel(id) {
+    return this.http.post(`/v1/broadcasts/${id}/cancel`, {});
+  }
+  /** One row per contact, with what became of their message. */
+  recipients(id, params = {}) {
+    return this.http.get(`/v1/broadcasts/${id}/recipients`, {
+      status: params.status,
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+  /**
+   * Removes the broadcast and its recipient records. Messages already sent
+   * stay in the conversations they went to.
+   */
+  delete(id) {
+    return this.http.delete(`/v1/broadcasts/${id}`);
+  }
+};
+var SequencesResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  list(params = {}) {
+    return this.http.get("/v1/sequences", {
+      workspace_id: params.workspaceId,
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+  get(id) {
+    return this.http.get(`/v1/sequences/${id}`);
+  }
+  /** Creating a sequence enrolls nobody. */
+  create(input) {
+    return this.http.post("/v1/sequences", {
+      workspace_id: input.workspaceId,
+      account_id: input.accountId,
+      name: input.name,
+      steps: input.steps,
+      status: input.status
+    });
+  }
+  /**
+   * Pausing stops every enrollment from firing without ending any of them;
+   * resuming picks them up where they stood.
+   */
+  update(id, input) {
+    return this.http.patch(`/v1/sequences/${id}`, {
+      name: input.name,
+      steps: input.steps,
+      status: input.status
+    });
+  }
+  /**
+   * Put contacts on the sequence. Re-enrolling someone restarts their walk
+   * from the first step rather than running two in parallel. Needs the
+   * `publish` scope as well as `inbox`.
+   */
+  enroll(id, input) {
+    return this.http.post(`/v1/sequences/${id}/enroll`, {
+      contact_ids: input.contactIds,
+      audience: input.audience
+    });
+  }
+  /** Nothing further fires for them. Needs the `publish` scope. */
+  unenroll(id, contactIds) {
+    return this.http.post(`/v1/sequences/${id}/unenroll`, {
+      contact_ids: contactIds
+    });
+  }
+  /** Who is on it, what step they are at, and when the next one is due. */
+  enrollments(id, params = {}) {
+    return this.http.get(`/v1/sequences/${id}/enrollments`, {
+      page: params.page,
+      per_page: params.perPage
+    });
+  }
+  /** Removes the sequence and every enrollment on it. */
+  delete(id) {
+    return this.http.delete(`/v1/sequences/${id}`);
+  }
+};
+var GoogleBusinessResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  getLocation(accountId) {
+    return this.http.get(`/v1/accounts/${accountId}/gbp/location`);
+  }
+  /** Only the fields present in `input` change. */
+  updateLocation(accountId, input) {
+    const body = {};
+    if (input.title !== void 0) body.title = input.title;
+    if (input.description !== void 0) body.description = input.description;
+    if (input.websiteUri !== void 0) body.website_uri = input.websiteUri;
+    if (input.primaryPhone !== void 0) body.primary_phone = input.primaryPhone;
+    if (input.additionalPhones !== void 0) body.additional_phones = input.additionalPhones;
+    if (input.storeCode !== void 0) body.store_code = input.storeCode;
+    if (input.regularHours !== void 0) {
+      body.regular_hours = input.regularHours.map((p) => ({
+        open_day: p.openDay,
+        open_time: p.openTime,
+        close_day: p.closeDay,
+        close_time: p.closeTime
+      }));
+    }
+    return this.http.patch(`/v1/accounts/${accountId}/gbp/location`, body);
+  }
+  getAttributes(accountId, params = {}) {
+    return this.http.get(`/v1/accounts/${accountId}/gbp/attributes`, {
+      available: params.available,
+      category_name: params.categoryName,
+      region_code: params.regionCode,
+      language_code: params.languageCode
+    });
+  }
+  /** Only the named attributes change; every other one is left alone. */
+  updateAttributes(accountId, attributes) {
+    return this.http.patch(`/v1/accounts/${accountId}/gbp/attributes`, {
+      attributes: attributes.map((a) => ({
+        name: a.name,
+        ...a.values === void 0 ? {} : { values: a.values },
+        ...a.uriValues === void 0 ? {} : { uri_values: a.uriValues }
+      }))
+    });
+  }
+  getMenus(accountId) {
+    return this.http.get(`/v1/accounts/${accountId}/gbp/menus`);
+  }
+  /** Google has no per-section patch, so the whole menu set is replaced. */
+  replaceMenus(accountId, menus) {
+    return this.http.put(`/v1/accounts/${accountId}/gbp/menus`, { menus });
+  }
+  getServices(accountId) {
+    return this.http.get(`/v1/accounts/${accountId}/gbp/services`);
+  }
+  replaceServices(accountId, serviceItems) {
+    return this.http.put(`/v1/accounts/${accountId}/gbp/services`, {
+      service_items: serviceItems
+    });
+  }
+  listMedia(accountId, params = {}) {
+    return this.http.get(`/v1/accounts/${accountId}/gbp/media`, {
+      page_size: params.pageSize,
+      page_token: params.pageToken
+    });
+  }
+  /** The photo is a media-library asset in the same workspace, JPEG or PNG. */
+  addMedia(accountId, input) {
+    return this.http.post(`/v1/accounts/${accountId}/gbp/media`, {
+      media_id: input.mediaId,
+      category: input.category,
+      description: input.description
+    });
+  }
+  deleteMedia(accountId, mediaKey) {
+    return this.http.delete(
+      `/v1/accounts/${accountId}/gbp/media/${mediaKey}`
+    );
+  }
+  listPlaceActions(accountId) {
+    return this.http.get(`/v1/accounts/${accountId}/gbp/place-actions`);
+  }
+  createPlaceAction(accountId, input) {
+    return this.http.post(`/v1/accounts/${accountId}/gbp/place-actions`, {
+      uri: input.uri,
+      place_action_type: input.placeActionType,
+      ...input.isPreferred === void 0 ? {} : { is_preferred: input.isPreferred }
+    });
+  }
+  updatePlaceAction(accountId, linkId, input) {
+    const body = {};
+    if (input.uri !== void 0) body.uri = input.uri;
+    if (input.isPreferred !== void 0) body.is_preferred = input.isPreferred;
+    return this.http.patch(
+      `/v1/accounts/${accountId}/gbp/place-actions/${linkId}`,
+      body
+    );
+  }
+  deletePlaceAction(accountId, linkId) {
+    return this.http.delete(
+      `/v1/accounts/${accountId}/gbp/place-actions/${linkId}`
+    );
+  }
+  getVerificationOptions(accountId, params = {}) {
+    return this.http.get(`/v1/accounts/${accountId}/gbp/verification`, {
+      language_code: params.languageCode
+    });
+  }
+  /** The response names the pending verification to complete with the PIN. */
+  startVerification(accountId, input) {
+    return this.http.post(
+      `/v1/accounts/${accountId}/gbp/verification/start`,
+      {
+        method: input.method,
+        language_code: input.languageCode,
+        phone_number: input.phoneNumber,
+        email_address: input.emailAddress,
+        mailer_contact_name: input.mailerContactName
+      }
+    );
+  }
+  completeVerification(accountId, input) {
+    return this.http.post(
+      `/v1/accounts/${accountId}/gbp/verification/complete`,
+      { verification_name: input.verificationName, pin: input.pin }
+    );
+  }
+  /** Daily impressions, calls, direction requests and clicks for the range. */
+  getPerformance(accountId, params) {
+    return this.http.get(`/v1/accounts/${accountId}/gbp/performance`, {
+      start_date: params.startDate,
+      end_date: params.endDate,
+      daily_metrics: params.dailyMetrics
+    });
+  }
+  /** The search terms people used to find the listing, by month. */
+  getSearchKeywords(accountId, params) {
+    return this.http.get(`/v1/accounts/${accountId}/gbp/performance`, {
+      keywords: true,
+      start_date: params.startDate,
+      end_date: params.endDate,
+      page_token: params.pageToken
+    });
+  }
+  /** Hands the location to another workspace; the caller must own both. */
+  assign(accountId, input) {
+    return this.http.post(`/v1/accounts/${accountId}/gbp/assign`, {
+      workspace_id: input.workspaceId
+    });
+  }
+};
+var BlogResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  getSettings(workspaceId) {
+    return this.http.get("/v1/blog/settings", { workspace_id: workspaceId });
+  }
+  /** `website_secret` is set only on the call that first sets `websiteUrl`. */
+  updateSettings(workspaceId, patch) {
+    return this.http.patch("/v1/blog/settings", { workspaceId, ...patch });
+  }
+  /** Issues a new website secret; the old one stops verifying at once. */
+  rotateWebsiteSecret(workspaceId) {
+    return this.http.post("/v1/blog/settings/website-secret", {
+      workspaceId
+    });
+  }
+  /** Sends a signed `article.test` delivery to `websiteUrl`. A refusal throws a 502 `website_test_failed`. */
+  testWebsite(workspaceId) {
+    return this.http.post("/v1/blog/settings/website-test", { workspaceId });
+  }
+  listKeywords(workspaceId, params = {}) {
+    return this.http.get("/v1/blog/keywords", {
+      workspace_id: workspaceId,
+      status: Array.isArray(params.status) ? params.status.join(",") : params.status,
+      limit: params.limit
+    });
+  }
+  /** About 10 search terms from the blog goal and topics; pass `seeds` to refine them. 402 on an empty balance. */
+  suggestSeeds(workspaceId, input = {}) {
+    return this.http.post("/v1/blog/keywords/suggest", {
+      workspaceId,
+      seeds: input.seeds,
+      prompt: input.prompt
+    });
+  }
+  /**
+   * Queues keyword research; results land as `suggested` keywords and the calendar is untouched.
+   * Follow the run in `plan_run` on the settings. 402 on an empty balance.
+   */
+  planKeywords(workspaceId, input = {}) {
+    return this.http.post("/v1/blog/keywords/plan", {
+      workspaceId,
+      seeds: input.seeds
+    });
+  }
+  addKeyword(workspaceId, input) {
+    return this.http.post("/v1/blog/keywords", {
+      workspaceId,
+      keyword: input.keyword,
+      plannedFor: input.plannedFor
+    });
+  }
+  /** Setting `status: 'planned'` picks the keyword; it takes the next free date. */
+  updateKeyword(workspaceId, id, patch) {
+    return this.http.request(
+      "PATCH",
+      `/v1/blog/keywords/${id}`,
+      { status: patch.status, plannedFor: patch.plannedFor },
+      { workspace_id: workspaceId }
+    );
+  }
+  deleteKeyword(workspaceId, id) {
+    return this.http.request("DELETE", `/v1/blog/keywords/${id}`, void 0, {
+      workspace_id: workspaceId
+    });
+  }
+  listArticles(workspaceId, params = {}) {
+    return this.http.get("/v1/blog/articles", {
+      workspace_id: workspaceId,
+      status: Array.isArray(params.status) ? params.status.join(",") : params.status,
+      limit: params.limit
+    });
+  }
+  /** Queues the writer; poll `getArticle` until `status` leaves `queued`/`writing`. 402 on an empty balance. */
+  requestArticle(workspaceId, input) {
+    return this.http.post("/v1/blog/articles", {
+      workspaceId,
+      title: input.title,
+      keyword: input.keyword,
+      keywordId: input.keywordId,
+      instructions: input.instructions
+    });
+  }
+  getArticle(workspaceId, id) {
+    return this.http.get(`/v1/blog/articles/${id}`, { workspace_id: workspaceId });
+  }
+  /** Only a draft, in-review, scheduled, failed or rejected article can be edited; anything else answers 409 `invalid_state`. */
+  updateArticle(workspaceId, id, patch) {
+    return this.http.request(
+      "PATCH",
+      `/v1/blog/articles/${id}`,
+      {
+        title: patch.title,
+        slug: patch.slug,
+        excerpt: patch.excerpt,
+        metaTitle: patch.metaTitle,
+        metaDescription: patch.metaDescription,
+        bodyMarkdown: patch.bodyMarkdown,
+        tags: patch.tags,
+        publishAt: patch.publishAt
+      },
+      { workspace_id: workspaceId }
+    );
+  }
+  regenerateArticle(workspaceId, id) {
+    return this.http.request("POST", `/v1/blog/articles/${id}/regenerate`, void 0, {
+      workspace_id: workspaceId
+    });
+  }
+  /** Moves a draft, failed or rejected article to `in_review`; 409 from any other state. */
+  submitArticle(workspaceId, id) {
+    return this.http.request("POST", `/v1/blog/articles/${id}/submit`, void 0, {
+      workspace_id: workspaceId
+    });
+  }
+  /** The article must be `in_review` (a draft answers 409 until submitted); 409 `no_target` when the settings name nowhere to publish. */
+  publishArticle(workspaceId, id) {
+    return this.http.request("POST", `/v1/blog/articles/${id}/publish`, void 0, {
+      workspace_id: workspaceId
+    });
+  }
+  rejectArticle(workspaceId, id) {
+    return this.http.request("POST", `/v1/blog/articles/${id}/reject`, void 0, {
+      workspace_id: workspaceId
+    });
+  }
+  deleteArticle(workspaceId, id) {
+    return this.http.request("DELETE", `/v1/blog/articles/${id}`, void 0, {
+      workspace_id: workspaceId
+    });
+  }
+};
+var WhatsappResource = class {
+  constructor(http) {
+    this.http = http;
+  }
+  http;
+  getProfile(accountId) {
+    return this.http.get(`/v1/accounts/${accountId}/whatsapp/profile`);
+  }
+  updateProfile(accountId, input) {
+    const body = {};
+    if (input.about !== void 0) body.about = input.about;
+    if (input.address !== void 0) body.address = input.address;
+    if (input.description !== void 0) body.description = input.description;
+    if (input.vertical !== void 0) body.vertical = input.vertical;
+    if (input.websites !== void 0) body.websites = input.websites;
+    if (input.profilePictureMediaId !== void 0) {
+      body.profile_picture_media_id = input.profilePictureMediaId;
+    }
+    return this.http.patch(`/v1/accounts/${accountId}/whatsapp/profile`, body);
+  }
+  /** A review, not a write: the number keeps its old name until it passes. */
+  requestDisplayName(accountId, displayName) {
+    return this.http.post(
+      `/v1/accounts/${accountId}/whatsapp/profile/display-name`,
+      { display_name: displayName }
+    );
+  }
+  setUsername(accountId, username) {
+    return this.http.put(`/v1/accounts/${accountId}/whatsapp/profile/username`, {
+      username
+    });
+  }
+  listTemplates(accountId, params = {}) {
+    return this.http.get(`/v1/accounts/${accountId}/whatsapp/templates`, {
+      after: params.after
+    });
+  }
+  /** The platform's pre-written templates, for adapting instead of drafting. */
+  listTemplateLibrary(accountId, params = {}) {
+    return this.http.get(
+      `/v1/accounts/${accountId}/whatsapp/templates/library`,
+      { search: params.search }
+    );
+  }
+  getTemplate(accountId, templateId) {
+    return this.http.get(
+      `/v1/accounts/${accountId}/whatsapp/templates/${templateId}`
+    );
+  }
+  /** Files a template for review; the result carries the status the platform gave it. */
+  createTemplate(accountId, input) {
+    const body = {
+      name: input.name,
+      language: input.language,
+      category: input.category,
+      components: input.components
+    };
+    if (input.allowCategoryChange !== void 0) {
+      body.allow_category_change = input.allowCategoryChange;
+    }
+    return this.http.post(`/v1/accounts/${accountId}/whatsapp/templates`, body);
+  }
+  importTemplate(accountId, input) {
+    const body = {
+      library_template_name: input.libraryTemplateName,
+      name: input.name,
+      language: input.language,
+      category: input.category
+    };
+    if (input.libraryTemplateButtonInputs !== void 0) {
+      body.library_template_button_inputs = input.libraryTemplateButtonInputs;
+    }
+    return this.http.post(
+      `/v1/accounts/${accountId}/whatsapp/templates/import`,
+      body
+    );
+  }
+  updateTemplate(accountId, templateId, input) {
+    const body = {};
+    if (input.category !== void 0) body.category = input.category;
+    if (input.components !== void 0) body.components = input.components;
+    return this.http.patch(
+      `/v1/accounts/${accountId}/whatsapp/templates/${templateId}`,
+      body
+    );
+  }
+  /** The name is required: it is what the platform deletes by. */
+  deleteTemplate(accountId, templateId, params) {
+    return this.http.delete(
+      `/v1/accounts/${accountId}/whatsapp/templates/${templateId}?name=${encodeURIComponent(params.name)}`
+    );
+  }
+  listGroups(accountId) {
+    return this.http.get(`/v1/accounts/${accountId}/whatsapp/groups`);
+  }
+  /** Participation is invite-only: send the invite link, there is no add. */
+  createGroup(accountId, input) {
+    const body = { subject: input.subject };
+    if (input.description !== void 0) body.description = input.description;
+    return this.http.post(`/v1/accounts/${accountId}/whatsapp/groups`, body);
+  }
+  getGroup(accountId, groupId) {
+    return this.http.get(`/v1/accounts/${accountId}/whatsapp/groups/${groupId}`);
+  }
+  updateGroup(accountId, groupId, input) {
+    const body = {};
+    if (input.subject !== void 0) body.subject = input.subject;
+    if (input.description !== void 0) body.description = input.description;
+    return this.http.patch(
+      `/v1/accounts/${accountId}/whatsapp/groups/${groupId}`,
+      body
+    );
+  }
+  deleteGroup(accountId, groupId) {
+    return this.http.delete(
+      `/v1/accounts/${accountId}/whatsapp/groups/${groupId}`
+    );
+  }
+  getGroupInviteLink(accountId, groupId) {
+    return this.http.get(
+      `/v1/accounts/${accountId}/whatsapp/groups/${groupId}/invite-link`
+    );
+  }
+  /** Issues a new link and invalidates the old one. */
+  resetGroupInviteLink(accountId, groupId) {
+    return this.http.post(
+      `/v1/accounts/${accountId}/whatsapp/groups/${groupId}/invite-link`
+    );
+  }
+  removeGroupParticipants(accountId, groupId, users) {
+    return this.http.delete(
+      `/v1/accounts/${accountId}/whatsapp/groups/${groupId}/participants`,
+      { users }
+    );
+  }
+  listBlocked(accountId, params = {}) {
+    return this.http.get(`/v1/accounts/${accountId}/whatsapp/block`, {
+      after: params.after
+    });
+  }
+  blockUsers(accountId, users) {
+    return this.http.post(`/v1/accounts/${accountId}/whatsapp/block`, {
+      users
+    });
+  }
+  unblockUsers(accountId, users) {
+    return this.http.delete(`/v1/accounts/${accountId}/whatsapp/block`, {
+      users
+    });
+  }
+  getCommerceSettings(accountId) {
+    return this.http.get(`/v1/accounts/${accountId}/whatsapp/commerce`);
+  }
+  updateCommerceSettings(accountId, input) {
+    const body = {};
+    if (input.cartEnabled !== void 0) body.is_cart_enabled = input.cartEnabled;
+    if (input.catalogVisible !== void 0) body.is_catalog_visible = input.catalogVisible;
+    return this.http.patch(
+      `/v1/accounts/${accountId}/whatsapp/commerce`,
+      body
+    );
+  }
+  linkCatalog(accountId, catalogId) {
+    return this.http.post(
+      `/v1/accounts/${accountId}/whatsapp/commerce/catalog`,
+      { catalog_id: catalogId }
+    );
+  }
+  listFlows(accountId) {
+    return this.http.get(`/v1/accounts/${accountId}/whatsapp/flows`);
+  }
+  getFlow(accountId, flowId) {
+    return this.http.get(`/v1/accounts/${accountId}/whatsapp/flows/${flowId}`);
+  }
+  createFlow(accountId, input) {
+    const body = { name: input.name, categories: input.categories };
+    if (input.endpointUri !== void 0) body.endpoint_uri = input.endpointUri;
+    if (input.cloneFlowId !== void 0) body.clone_flow_id = input.cloneFlowId;
+    return this.http.post(`/v1/accounts/${accountId}/whatsapp/flows`, body);
+  }
+  updateFlow(accountId, flowId, input) {
+    const body = {};
+    if (input.name !== void 0) body.name = input.name;
+    if (input.categories !== void 0) body.categories = input.categories;
+    if (input.endpointUri !== void 0) body.endpoint_uri = input.endpointUri;
+    return this.http.patch(
+      `/v1/accounts/${accountId}/whatsapp/flows/${flowId}`,
+      body
+    );
+  }
+  /** Drafts only; a published flow is deprecated instead. */
+  deleteFlow(accountId, flowId) {
+    return this.http.delete(
+      `/v1/accounts/${accountId}/whatsapp/flows/${flowId}`
+    );
+  }
+  /** The platform answers with its validation errors rather than refusing. */
+  uploadFlowJson(accountId, flowId, flowJson) {
+    return this.http.put(
+      `/v1/accounts/${accountId}/whatsapp/flows/${flowId}/json`,
+      { flow_json: flowJson }
+    );
+  }
+  publishFlow(accountId, flowId) {
+    return this.http.post(
+      `/v1/accounts/${accountId}/whatsapp/flows/${flowId}/publish`
+    );
+  }
+  deprecateFlow(accountId, flowId) {
+    return this.http.post(
+      `/v1/accounts/${accountId}/whatsapp/flows/${flowId}/deprecate`
+    );
+  }
+  listFlowResponses(accountId) {
+    return this.http.get(
+      `/v1/accounts/${accountId}/whatsapp/flows/responses`
+    );
+  }
+  getEncryptionKeyStatus(accountId) {
+    return this.http.get(
+      `/v1/accounts/${accountId}/whatsapp/flows/encryption-key`
+    );
+  }
+  /** The public half only; the private half stays with the customer. */
+  setEncryptionKey(accountId, businessPublicKey) {
+    return this.http.put(
+      `/v1/accounts/${accountId}/whatsapp/flows/encryption-key`,
+      { business_public_key: businessPublicKey }
+    );
+  }
+  getAccountEvents(accountId) {
+    return this.http.get(`/v1/accounts/${accountId}/whatsapp/events`);
+  }
+  listSandboxSessions(params) {
+    return this.http.get("/v1/whatsapp/sandbox/sessions", {
+      workspaceId: params.workspaceId
+    });
+  }
+  /** Sends a template from the platform-owned test number, so it needs the publish scope. */
+  createSandboxSession(input) {
+    return this.http.post("/v1/whatsapp/sandbox/sessions", {
+      workspaceId: input.workspaceId,
+      phoneNumber: input.phoneNumber
+    });
   }
 };
 

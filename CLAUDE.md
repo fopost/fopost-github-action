@@ -102,17 +102,8 @@ Inherited from `@fopost/sdk` (read that repo before changing request shapes):
 `@fopost/sdk` is published on npm, so `npm ci` resolves it normally — no
 CI-from-source shim is needed here.
 
-**The range must move to `^0.2.3` as soon as that version is on npm.** The manifest
-currently declares `^0.2.2`, and 0.2.2 is broken: it sends _every_ request to
-`/api/v1/...`, which the API answers with a 404. So while this action's own media
-upload is now correct, the SDK-driven calls (`accounts.list`, `posts.create`,
-`posts.publish`) cannot succeed against production until 0.2.3 lands. The fix is on
-branch `fix/api-base-path` in `fopost-js`.
-
-`^0.2.3` is not declared yet on purpose: npm has no such version, so declaring it fails
-`npm ci` outright with `ETARGET` — which would take CI, the self test, and the release
-workflow red, and would not make the action work any sooner. Bump `package.json`, run
-`npm install` to refresh the lockfile, and drop this paragraph the day 0.2.3 publishes.
+The manifest declares `^0.6.0`. Bump `package.json`, run `npm install` to refresh the
+lockfile, and rebuild `dist/` in the same commit whenever the floor moves.
 
 Historical note: the brief for this repo said `^0.1`, but npm only ever carried the
 0.2.x line, so `^0.1` would not install either.
