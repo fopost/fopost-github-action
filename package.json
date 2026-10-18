@@ -1,6 +1,6 @@
 {
   "name": "fopost-github-action",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Official GitHub Action for FoPost. Create, schedule, and publish social posts from a workflow.",
   "license": "MIT",
